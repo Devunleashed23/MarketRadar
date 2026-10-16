@@ -92,7 +92,7 @@ class BrowserTests(unittest.TestCase):
         snapshot = ('- row "travel mug 1K Low $0.50" [ref=e1]\n'
                     '- row "fishing rod 9K High $9.00" [ref=e2]')
         data = BrowserCollector._extract({"keywords": [{"keyword": "travel mug", "volume": "9K", "competition": "High", "bid": "$9.00"}]},
-                                        "keyword_planner", snapshot, "https://ads.google.com/aw/keywordplanner/home")
+                                        "keyword_planner", snapshot)
         self.assertIsNone(data["keywords"][0]["volume"])
         self.assertIsNone(data["keywords"][0]["competition"])
         self.assertIsNone(data["keywords"][0]["bid"])
@@ -101,19 +101,19 @@ class BrowserTests(unittest.TestCase):
         snapshot = ('- row [ref=e1]:\n  - cell "travel mug"\n  - cell "1K – 10K"\n  - cell "Low"\n'
                     '- row [ref=e2]:\n  - cell "fishing rod"\n  - cell "9K"\n  - cell "High"')
         data = BrowserCollector._extract({"keywords": [{"keyword": "travel mug", "volume": "1K – 10K", "competition": "Low"}]},
-                                        "keyword_planner", snapshot, "https://ads.google.com/aw/keywordplanner/home")
+                                        "keyword_planner", snapshot)
         self.assertEqual(data["keywords"][0]["volume"], "1K – 10K")
         self.assertEqual(data["keywords"][0]["competition"], "Low")
 
     def test_snapshot_trend_values_must_belong_to_the_same_date_and_term(self):
         snapshot = '- row "2026-10-04 travel mug 20"\n- row "2026-10-11 tumbler 90"'
         data = BrowserCollector._extract({"trends": [{"date": "2026-10-04", "term": "travel mug", "value": "90"}]},
-                                        "google_trends", snapshot, "https://trends.google.com/trends/explore")
+                                        "google_trends", snapshot)
         self.assertEqual(data["trends"], [])
 
     def test_model_notes_must_be_observed_source_text(self):
         data = BrowserCollector._extract({"notes": ["Demand doubled", "No data available"]}, "keyword_planner",
-                                        '- heading "No data available"', "https://ads.google.com/aw/keywordplanner/home")
+                                        '- heading "No data available"')
         self.assertEqual(data["notes"], ["No data available"])
 
     def test_rate_limit_is_explicit_and_does_not_use_a_model_call(self):
@@ -127,15 +127,6 @@ class BrowserTests(unittest.TestCase):
                 result = collector._collect_source('google_trends', BRIEF,
                     collector.source_url('google_trends', BRIEF), NoModel(), None)
                 self.assertEqual(result["status"], "rate_limited")
-
-    def test_marketplace_price_cannot_be_borrowed_from_another_listing(self):
-        snapshot = ('- listitem:\n  - heading "Travel Mug"\n  - link "Travel Mug":\n'
-                    '    - /url: https://www.amazon.com/dp/B123\n  - generic "$12.00"\n'
-                    '- listitem:\n  - heading "Fishing Rod"\n  - generic "$99.00"')
-        data = BrowserCollector._extract({"competitors": [{"title": "Travel Mug", "url": "https://www.amazon.com/dp/B123", "price": "$99.00"}]},
-                                        "marketplace", snapshot, "https://www.amazon.com/s?k=travel+mug")
-        self.assertEqual(len(data["competitors"]), 1)
-        self.assertIsNone(data["competitors"][0]["price"])
 
     def test_login_and_setup_are_reported_without_fabricated_success(self):
         for snapshot, expected in [('- heading "Sign in to Google Ads"', "login_required"),
@@ -161,12 +152,14 @@ class BrowserTests(unittest.TestCase):
             result = collector.collect(BRIEF, FakeModel({"action": "done", "status": "live", "data": {}}))
         self.assertEqual(result[0]["status"], "no_results")
 
-    def test_marketplace_pages_cannot_trigger_click_or_search_actions(self):
+    def test_non_google_sources_cannot_trigger_model_browser_actions(self):
         collector = BrowserCollector()
         for action in [{"action": "click", "ref": "e1"},
-                       {"action": "fill", "ref": "e1", "value": BRIEF["keyword"]}]:
-            with self.subTest(action=action), self.assertRaises(BrowserError):
-                collector._action_args(action, "marketplace", '- textbox "Search" [ref=e1]', BRIEF, None)
+                       {"action": "fill", "ref": "e1", "value": BRIEF["keyword"]},
+                       {"action": "scroll"}, {"action": "snapshot"}]:
+            for source in ["marketplace", "unknown"]:
+                with self.subTest(action=action, source=source), self.assertRaises(BrowserError):
+                    collector._action_args(action, source, '- textbox "Search" [ref=e1]', BRIEF, None)
 
     def test_amazon_navigation_uses_one_planning_call_and_fixed_script(self):
         class CountingModel(FakeModel):

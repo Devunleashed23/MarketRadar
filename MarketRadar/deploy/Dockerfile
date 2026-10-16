@@ -37,7 +37,6 @@ RUN pip install --no-cache-dir -r /app/MarketRadar/requirements.txt \
 COPY MarketRadar/*.py /app/MarketRadar/
 COPY MarketRadar/amazon_research.js /app/MarketRadar/
 COPY MarketRadar/static/ /app/MarketRadar/static/
-COPY MarketRadar/tests/ /app/MarketRadar/tests/
 COPY MarketRadar/deploy/ /app/MarketRadar/deploy/
 COPY subagents/__init__.py subagents/amazon_market_agent_v2.py subagents/listing_agent_v2.py /app/subagents/
 COPY models.py /app/models.py

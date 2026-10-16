@@ -11,7 +11,6 @@ import uuid
 from .fastn import FastnClient
 from .settings import Settings
 
-MARKET_DOMAINS = ('amazon.com',)
 FINAL_STATES = ('completed', 'failed', 'cancelled', 'interrupted')
 
 
@@ -37,15 +36,10 @@ def validate_brief(raw):
     if not isinstance(urls, list) or len(urls) > 3:
         raise ValueError('Provide at most three competitor URLs.')
     product_url = str(raw.get('product_url', '')).strip()
+    from .browser import safe_marketplace_url
     for url in ([product_url] if product_url else []) + urls:
         if not isinstance(url, str) or len(url) > 2000:
             raise ValueError('Invalid marketplace URL.')
-        parsed = urlsplit(url)
-        host = (parsed.hostname or '').lower()
-        if parsed.scheme != 'https' or parsed.username or parsed.password or not any(
-                host == domain or host.endswith('.' + domain) for domain in MARKET_DOMAINS):
-            raise ValueError('Use an HTTPS Amazon.com product URL.')
-        from .browser import safe_marketplace_url
         checked = safe_marketplace_url(url)
         if not re.search(r'/(?:dp|gp/product)/[A-Z0-9]{10}(?:/|$)', urlsplit(checked).path):
             raise ValueError('Use an Amazon.com product link containing a ten-character ASIN.')

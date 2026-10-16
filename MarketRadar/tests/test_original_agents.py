@@ -12,9 +12,10 @@ import unittest
 EVIDENCE = [{'id': 'planner-live', 'source': 'keyword_planner', 'status': 'live',
              'data': {'keywords': [{'keyword': 'travel mug', 'volume': '1K–10K'}]}},
             {'id': 'trends-missing', 'source': 'google_trends', 'status': 'login_required', 'data': {}}]
-BRIEF = {'keyword': 'travel mug', 'marketplace': 'ebay', 'country': 'US'}
+BRIEF = {'keyword': 'travel mug', 'marketplace': 'amazon', 'country': 'US'}
 ANALYSIS = {'summary': 'Observed Planner range; Trends unavailable.', 'observations': ['The observed range is 1K–10K.'],
-            'limitations': ['No observed Trends data.']}
+            'limitations': ['No observed Trends data.'], 'products_in_demand': [],
+            'complaints': [], 'requested_features': [], 'market_gaps': []}
 
 
 class FakeModel:
@@ -67,12 +68,12 @@ class OriginalAgentStageTests(unittest.TestCase):
         self.assertEqual(model.calls, [])
 
     def test_opportunity_stage_preserves_valid_source_linked_actions(self):
-        action = {'id': 'review-mug', 'title': 'Review the eBay listing wording',
+        action = {'id': 'review-mug', 'title': 'Review the Amazon listing wording',
                   'reason': 'Check the observed term against the actual product.', 'evidence_ids': ['planner-live']}
         model = FakeModel({'recommendations': [action]})
         result = self.listing.suggest_marketplace_opportunities(BRIEF, EVIDENCE, ANALYSIS, model)
         self.assertEqual(result, {'recommendations': [action]})
-        self.assertIn('ebay', model.calls[0][1])
+        self.assertIn('amazon', model.calls[0][1])
         self.assertIn('No publishing', model.calls[0][0])
 
     def test_actions_cannot_cite_missing_failed_or_sample_sources(self):
