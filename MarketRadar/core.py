@@ -320,13 +320,17 @@ class Radar:
         """Continue a saved live report with native approval, preserving its capture dates."""
         with self.lock:
             run = self.get(identity)
+            retry_suppliers = bool(run.get('approved_product') and run.get('suppliers')
+                and run['suppliers'].get('status') != 'live' and not run.get('outreach'))
             if (run['mode'] != 'live' or run['state'] != 'completed' or not run.get('report')
-                    or run.get('review_history') or run.get('closed')):
+                    or ((run.get('review_history') or run.get('closed')) and not retry_suppliers)):
                 raise ValueError('Choose a completed live report that has not entered agent review.')
             if any(thread.is_alive() for thread in self.threads.values()):
                 raise ValueError('Another research action is still running.')
-            self._change(identity, state='queued')
-            self._event(identity, 'human_review', 'Continuing the saved report with its original evidence capture dates; sources are not refreshed until you request a revision.')
+            self._change(identity, state='queued', closed=False,
+                         **({'suppliers': None} if retry_suppliers else {}))
+            self._event(identity, 'human_review', 'Retrying supplier research with the existing human product approval.' if retry_suppliers
+                        else 'Continuing the saved report with its original evidence capture dates; sources are not refreshed until you request a revision.')
             self.stops[identity] = threading.Event()
             thread = threading.Thread(target=self._execute, args=(identity,), daemon=True)
             self.threads[identity] = thread

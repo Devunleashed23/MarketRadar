@@ -21,8 +21,8 @@ The local app uses the existing Python environment, Node.js, Playwright CLI inst
 | `__main__.py` | Starts `server.main()`. |
 | `server.py` | Serves the dashboard/API; a research POST calls `Radar.start()`. |
 | `core.py` | Manages background jobs, report validation, history and human review. |
-| `agents.py` | Defines the DeepAgents orchestrator, two specialists and their LangChain tools. Start here to understand the agent architecture. |
-| `browser.py` | Model-free Playwright tools: Google observations/actions and scripted Amazon collection. |
+| `agents.py` | Defines the DeepAgents orchestrator, three specialists and their LangChain tools. Start here to understand the agent architecture. |
+| `browser.py` | Model-free Playwright tools: Google observations/actions and scripted Amazon/supplier collection. |
 | `amazon_research.js` | Fixed Playwright script: search Amazon, read products, features and embedded reviews. No LLM calls. |
 | `models.py` | Local Codex subscription provider plus `ResearchChatModel`, the LangChain model adapter. |
 | `cloud_model.py` | Cloud `CloudModel.complete_json()` provider adapter. |
@@ -38,8 +38,11 @@ Dashboard -> server.py -> Radar.start() -> background thread -> Radar._execute()
          task("google-demand") -> open_google / google_step tools
          task("amazon-reviews") -> research_amazon tool -> fixed Playwright script
          read_evidence() -> canonical source records and reviews
-         finalize_report(report) -> validate citations and end the graph
-    -> save the report -> human review
+         finalize_report(report) -> validate citations and save the report
+         approve_product(...) -> pause for human approval or research feedback
+         task("supplier-scout") -> find_suppliers -> fixed Playwright script
+         contact_supplier(...) -> pause for exact-message approval or feedback
+    -> approved email delivery or manual contact draft -> save history
 ```
 
 `create_deep_agent()` builds the LangGraph model/tool loop. The main agent delegates with `task`: Google owns Keyword Planner and Trends, Amazon chooses searches and calls the fixed scraper, and supplier-scout reads public supplier profiles after product approval. Each specialist has only its own tools. Requests run sequentially because the browser session is shared.
@@ -56,11 +59,11 @@ Email delivery is optional: set `MARKETRADAR_SMTP_HOST`, `MARKETRADAR_SMTP_PORT`
 
 LangChain's `@tool` defines typed callable tools; LangGraph carries messages, tool calls and results between turns. `ResearchChatModel.bind_tools()` exposes tool schemas to the existing JSON provider and turns its response into a LangChain `AIMessage`. LangGraph executes those calls. The Codex subprocess itself has tools disabled. No handwritten LLM loop remains in `browser.py`.
 
-The orchestrator reads canonical tool evidence before finalizing. Subagent summaries cannot replace source records. `finalize_report` validates the existing fixed report format against real evidence/review IDs. A validation error returns correction feedback, with at most three submissions; a successful submission ends the graph before another model call. LangChain middleware exposes only the next valid orchestrator action: delegate the pending specialist, read completed evidence, then submit the report. Unavailable sources count as completed attempts and remain disclosed. Built-in shell/filesystem tools and the general-purpose subagent are disabled; the graph uses an in-memory state backend.
+The orchestrator reads canonical tool evidence before finalizing. Subagent summaries cannot replace source records. `finalize_report` validates the fixed report format against real evidence/review IDs. A validation error returns correction feedback, with at most three submissions; a successful submission advances to human product review. LangChain middleware exposes only the next valid orchestrator action and blocks delegation to the wrong specialist. Unavailable sources count as completed attempts and remain disclosed. Built-in shell/filesystem tools and the general-purpose subagent are disabled; StateBackend keeps agent files in graph state, while SqliteSaver persists checkpoints.
 
 Amazon uses a different approach: Python inserts validated query/ASIN data into the checked-in JavaScript template and runs it through Playwright CLI. The model never writes Amazon selectors or browser code. Collection is bounded to two searches, three products, and twelve sampled reviews per product; review bodies are limited to 1,200 characters.
 
-All agents share one provider and a total cap of thirty model calls. Google gets at most six action decisions per source. The graph recursion limit is fifty. Cancellation reaches the provider and browser tools through the run's stop event. Sample mode bypasses the graph and model entirely. Dependencies are pinned in `requirements.txt` to the versions used by this refactor.
+All agents share one provider and a cap of thirty model calls per execution or human-approved continuation. Google gets at most six action decisions per source. The graph recursion limit is fifty. Cancellation reaches the provider and browser tools through the run's stop event. Sample mode bypasses the graph and model entirely. Dependencies are pinned in `requirements.txt` to the versions used by this refactor.
 
 Framework references: [DeepAgents subagents](https://docs.langchain.com/oss/python/deepagents/subagents), [customization](https://docs.langchain.com/oss/python/deepagents/customization), [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview).
 
@@ -70,7 +73,7 @@ Every report contains summary, observations, products with demand signals, compl
 
 Google Trends measures relative interest, not sales. Keyword Planner competition describes Google advertising. Amazon's bought-in-past-month labels are recorded as displayed. Reviews can pool variants/countries and are not a representative survey. Google country/language/date selections do not change Amazon delivery settings or filter its reviews. Unverified filters and missing sources remain disclosed.
 
-The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. The human-review extension passes 114 application tests and four supervisor tests, including real graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. Supplier live access and configured email delivery need deployment verification.
+The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. Checks cover native graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. A local supplier check read three real profiles and two displayed audit badges. Configured email delivery and the cloud browser still need live verification.
 
 ## Supporting files
 
@@ -80,4 +83,4 @@ The earlier DeepAgents live run on 16 October 2026 completed with all three sour
 - `package_release.py` copies allowlisted source files into `.release/`; it is a publishing utility, not part of the agent loop.
 - `tests/` contains development checks and is excluded from the production image.
 
-Local model selection defaults to `gpt-6-luna`; `MARKETRADAR_CODEX_MODEL` can override it. Cloud inference uses `AF_API_KEY`, `AF_ORG_ID` and optional `MARKETRADAR_CLOUD_MODEL`. Local Codex sign-in is never copied to the cloud. Cloud Google sign-in and authenticated inference still require live verification.
+Local model selection defaults to `gpt-6-luna`; `MARKETRADAR_CODEX_MODEL` can override it. Cloud inference uses `AF_API_KEY`, `AF_ORG_ID` and optional `MARKETRADAR_CLOUD_MODEL`; an authenticated inference request has succeeded. Local Codex sign-in is never copied to the cloud. Cloud Google sign-in still requires a working cloud browser and manual login.

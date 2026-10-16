@@ -596,7 +596,9 @@ function renderHumanLoop(run) {
   const waiting = run.state === 'awaiting_review' && Boolean(action), native = Boolean(request || run.approved_product || run.review_history?.length);
   const demo = app.status?.deployment?.role === 'demo', suppliers = run.suppliers?.suppliers || [];
   $('human-loop').hidden = !native;
-  $('human-review-start').hidden = native || run.state !== 'completed' || run.mode !== 'live' || !run.report || demo;
+  const retrySuppliers = run.approved_product && run.suppliers && run.suppliers.status !== 'live' && !run.outreach;
+  $('human-review-start').hidden = (native && !retrySuppliers) || run.state !== 'completed' || run.mode !== 'live' || !run.report || demo;
+  $('human-review-start').textContent = retrySuppliers ? 'Retry supplier research' : 'Review this research with the agent';
   document.querySelectorAll('#review-note, label[for="review-note"], .save-bar').forEach((el) => { el.hidden = native; });
   if (native) $('review-result').hidden = true;
   if (!native) return;
@@ -765,7 +767,7 @@ function bindEvents() {
   $('human-review-start').addEventListener('click', () => buttonAction($('human-review-start'), async () => {
     await post(`/api/runs/${encodeURIComponent(app.runId)}/review-start`);
     clearTimeout(app.poll); await pollRun(app.runId);
-    notice('The agent is reviewing your saved research. No sources are being collected again.');
+    notice('The agent is continuing from your saved research and approvals.');
   }, 'Opening agent review…'));
   $('human-product').addEventListener('change', () => { if (app.run) renderHumanLoop(app.run); });
   $('review-note').addEventListener('input', updateSaveState);

@@ -10,8 +10,8 @@ import re
 from deepagents import (GeneralPurposeSubagentProfile, HarnessProfile,
                         create_deep_agent, register_harness_profile)
 from deepagents.backends import StateBackend
-from langchain.agents.middleware import before_model, wrap_model_call
-from langchain_core.messages import SystemMessage
+from langchain.agents.middleware import before_model, wrap_model_call, wrap_tool_call
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command
 
@@ -77,6 +77,26 @@ def run_research(brief, provider, browser, *, stop=None, emit=None, on_evidence=
             return handler(request.override(tool_choice='auto' if done() else 'required'))
         return require_tools
 
+    def required_specialist():
+        if (session or {}).get('revision_requested'):
+            return None
+        if not {'keyword_planner', 'google_trends'} <= attempted:
+            return 'google-demand'
+        if 'marketplace' not in attempted:
+            return 'amazon-reviews'
+        if session is not None and final and session.get('approved_product') and not session.get('suppliers'):
+            return 'supplier-scout'
+        return None
+
+    @wrap_tool_call
+    def route_specialist(request, handler):
+        # task's string argument needs a runtime check as well as a prompt.
+        call, expected = request.tool_call, required_specialist()
+        if call['name'] == 'task' and (not expected or call['args'].get('subagent_type') != expected):
+            return ToolMessage(content=f'Delegation was not executed. The current stage requires {expected or "no specialist"}. Follow the current workflow stage.',
+                               tool_call_id=call['id'], status='error')
+        return handler(request)
+
     @wrap_model_call
     def research_order(request, handler):
         # Expose only the next valid action; a prompt alone cannot enforce order.
@@ -95,7 +115,7 @@ def run_research(brief, provider, browser, *, stop=None, emit=None, on_evidence=
         elif session is not None and not session.get('approved_product'):
             name, instruction = 'approve_product', 'Propose an observed product and requirements for human review. Approval is required before sourcing.'
         elif session is not None and not session.get('suppliers'):
-            name, instruction = 'task', 'Delegate supplier-scout for the human-approved product and requirements. Do not contact anyone.'
+            name, instruction = 'task', 'Call task with subagent_type="supplier-scout" for the human-approved product and requirements. Google and Amazon are already complete. Do not contact anyone.'
         elif session is not None and session.get('suppliers', {}).get('suppliers'):
             name, instruction = 'contact_supplier', 'Propose one inquiry for an observed supplier. The human will review the exact message before any delivery.'
         else:
@@ -294,23 +314,22 @@ missing checks (legal identity, sample quality, certificates, MOQ). Never contac
 suppliers. Suggest a concise initial inquiry, asking for evidence and a sample quote."""}
     orchestrator = create_deep_agent(
         model=chat, backend=StateBackend(), subagents=[google, amazon] + ([supplier] if session is not None else []),
-        middleware=[research_order, finish_when_saved],
+        middleware=[research_order, route_specialist, finish_when_saved],
         tools=[read_evidence, finalize_report] + ([revise_research, approve_product, contact_supplier, finish_workflow] if session is not None else []),
         checkpointer=checkpointer,
         interrupt_on=({'approve_product': {'allowed_decisions': ['approve', 'edit', 'reject']},
                        'contact_supplier': {'allowed_decisions': ['approve', 'edit', 'reject']}} if session is not None else None),
         name='MarketRadar',
         system_prompt=POLICY + context + '\n' + REPORT_FORMAT + """
-Delegate sequentially with task: first google-demand, then amazon-reviews. Include
-useful keyword ideas in the Amazon delegation. Both are required even when one
-source is unavailable. After both finish call read_evidence, then use that canonical
-evidence to compose the report and call finalize_report exactly once. Research is
-complete only when finalize_report succeeds. Never replace tool evidence with a
-subagent's claims or invent source IDs.""")
+Follow the current workflow stage. Delegate only the required specialist; completed
+sources are already saved and must not be repeated. For new research collect Google
+then Amazon, read canonical evidence and finalize the report. After human product
+approval delegate supplier-scout, then propose a separately approved inquiry.
+Never replace tool evidence with a subagent's claims or invent source IDs.""")
     event('orchestrator', 'DeepAgents orchestrator is delegating the research.')
     config = {'recursion_limit': 50, 'configurable': {'thread_id': (session or {}).get('id', 'research')}}
     result = orchestrator.invoke(Command(resume=resume) if resume is not None else
-        {'messages': [('user', 'Research this niche, submit the report, and request human product approval.')]}, config=config)
+        {'messages': [('user', 'Continue the workflow from its saved state and human direction. Pause for each required human approval.')]}, config=config)
     if result.get('__interrupt__'):
         pending = result['__interrupt__'][0]
         persist(state='awaiting_review', review_request=dict(pending.value, id=pending.id))

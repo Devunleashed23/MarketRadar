@@ -818,12 +818,12 @@ class BrowserCollector:
             # Fixed browser code and a JSON URL: the LLM never supplies JavaScript.
             code = r'''async page => {
               const result = {suppliers: [], status: 'failed', notes: []};
-              const safe = raw => { try { const u = new URL(raw); return u.protocol === 'https:' &&
-                !u.username && !u.password && !u.port && /^[a-z0-9-]+\.en\.made-in-china\.com$/.test(u.hostname) ? u.href : null; } catch { return null; } };
+            const safe = raw => typeof raw === 'string' &&
+                /^https:\/\/[a-z0-9-]+\.en\.made-in-china\.com\/[a-z0-9_./?=%&+-]*$/i.test(raw) ? raw : null;
               const visit = async url => {
                 const response = await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 20000});
-                const u = new URL(page.url());
-                if (u.protocol !== 'https:' || !(u.hostname === 'www.made-in-china.com' || safe(u.href))) throw new Error('Directory redirected outside allowed public pages.');
+                const current = page.url();
+                if (!(current.startsWith('https://www.made-in-china.com/') || safe(current))) throw new Error('Directory redirected outside allowed public pages.');
                 const body = await page.locator('body').innerText({timeout: 5000});
                 if ([403, 429].includes(response?.status()) || /captcha|verify (?:you are|that you are) human|access denied|robot check|security verification/i.test(body)) {
                   result.status = 'blocked'; result.notes.push('Directory access check stopped collection; no bypass was attempted.'); return false;
@@ -833,21 +833,23 @@ class BrowserCollector:
               };
               try {
                 if (!await visit(/*SEARCH_URL*/)) return result;
-                await page.locator('.J-prod-list .list-img, .J-prod-list .list-item').first().waitFor({timeout: 8000});
-                const candidates = await page.locator('.J-prod-list .list-img, .J-prod-list .list-item').evaluateAll(cards => cards.slice(0, 15).map(card => {
-                  const company = card.querySelector('.company-name a');
+                const cards = page.locator('.list-node, .J-prod-list .list-img, .J-prod-list .list-item');
+                await cards.first().waitFor({timeout: 8000});
+                const candidates = await cards.evaluateAll(cards => cards.slice(0, 15).map(card => {
+                  const company = card.querySelector('.company-name-txt a, .company-name a');
                   return {name: company?.innerText?.trim(), url: company?.href,
                     product: card.querySelector('.product-name')?.innerText?.trim().slice(0, 400),
                     snippet: card.innerText.slice(0, 700)};
                 }));
                 const seen = new Set();
                 for (const item of candidates) {
-                  const profile = safe(item.url);
-                  if (!profile || new URL(profile).pathname !== '/' || !item.name || seen.has(profile)) continue;
+                  const profile = safe(item.url)?.split('?')[0];
+                  if (!profile || !/^https:\/\/[a-z0-9-]+\.en\.made-in-china\.com\/$/i.test(profile) || !item.name || seen.has(profile)) continue;
                   seen.add(profile);
                   if (!await visit(profile)) return result;
                   const observed = await page.evaluate(() => ({
-                    audit: document.querySelector('.shop-sign__as')?.innerText?.trim() || null,
+                    audit: (() => { const badge = document.querySelector('.shop-sign__as img[alt="Audited Supplier"]');
+                      return badge?.getClientRects().length ? badge.alt : null; })(),
                     license: [...document.querySelectorAll('.shop-sign *')].some(el => el.innerText?.trim() === 'Suppliers with verified business licenses'),
                     contact: [...document.querySelectorAll('a[href]')].find(a => a.pathname === '/contact-info.html')?.href || null,
                     email: [...document.querySelectorAll('a[href^="mailto:"]')].find(a => a.textContent.includes('@'))?.getAttribute('href')?.slice(7).split('?')[0] || null
@@ -857,7 +859,7 @@ class BrowserCollector:
                   result.suppliers.push({id: `supplier-${result.suppliers.length + 1}`, name: item.name.slice(0, 200), url: profile,
                     product: item.product, verification: badges.length ? `Directory badge observed: ${badges.join('; ')}` : 'Unverified: no supported directory badge observed.',
                     verification_url: badges.length ? page.url() : null,
-                    contact_url: safe(observed.contact) && new URL(observed.contact).hostname === new URL(profile).hostname ? observed.contact : null,
+                    contact_url: safe(observed.contact) && observed.contact.split('/')[2].toLowerCase() === profile.split('/')[2].toLowerCase() ? observed.contact : null,
                     email: /^[^\s@<>]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(observed.email || '') ? observed.email : null, captured_at: new Date().toISOString(),
                     notes: [`Search card: ${item.snippet}`, 'Certification and product quality were not independently checked.']});
                   if (result.suppliers.length === 3) break;

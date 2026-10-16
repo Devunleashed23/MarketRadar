@@ -171,9 +171,12 @@ class DeepAgentWorkflowTests(unittest.TestCase):
                 if self.turn == 0:
                     assert product['asin'] in prompt  # Saved reports expose actual choices on reopen.
                 sequence = [('approve_product', {'product_id': product['asin'], 'requirements': 'Leak-resistant lid'}),
+                    ('task', {'subagent_type': 'google-demand', 'description': 'Incorrect repeated Google research.'}),
                     ('task', {'subagent_type': 'supplier-scout', 'description': 'Check suppliers for the approved mug.'}),
                     ('find_suppliers', {}), (None, 'Supplier profile observed; samples need checking.'),
                     ('contact_supplier', draft), ('contact_supplier', dict(draft, body='Please quote a sample and show your audit report.'))]
+                if self.turn == 2:
+                    assert 'Delegation was not executed' in prompt and 'supplier-scout' in prompt
                 name, args = sequence[self.turn]
                 self.turn += 1
                 if name is None:
@@ -202,16 +205,18 @@ class DeepAgentWorkflowTests(unittest.TestCase):
             self.assertEqual(browser.calls, 1)
             self.assertNotIn('outreach', session)
             self.assertEqual(session['review_request']['action_requests'][0]['name'], 'contact_supplier')
+            first_message_review = session['review_request']['id']
             session['human_feedback'] = 'Ask for the audit report before discussing quantities.'
             invoke({'decisions': [{'type': 'reject', 'message': session['human_feedback']}]})
             self.assertNotIn('outreach', session)
             self.assertIn('audit report', session['review_request']['action_requests'][0]['args']['body'])
+            self.assertNotEqual(session['review_request']['id'], first_message_review)
             invoke({'decisions': [{'type': 'edit', 'edited_action': {'name': 'contact_supplier',
                 'args': dict(draft, body='Human-edited sample request.')}}]})
             self.assertEqual(session['outreach']['status'], 'approved_draft')
             self.assertEqual(session['outreach']['body'], 'Human-edited sample request.')
             self.assertTrue(session['closed'])
-            self.assertEqual(provider.turn, 6)
+            self.assertEqual(provider.turn, 7)
 
     def test_real_graph_delegates_executes_tools_and_validates_citations(self):
         from MarketRadar.agents import run_research

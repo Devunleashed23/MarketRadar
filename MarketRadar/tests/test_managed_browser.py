@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -10,6 +12,56 @@ from MarketRadar.browser import BrowserCollector
 
 
 class ManagedBrowserTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'The Playwright CLI requires Node.js.')
+    def test_supplier_script_runs_without_url_global_and_restricts_hosts(self):
+        # Playwright CLI run-code uses a VM without the browser's URL global.
+        harness = r'''
+const fs = require('fs'), vm = require('vm');
+const document = {
+  querySelector: s => s === '.shop-sign__as img[alt="Audited Supplier"]' ? {alt: 'Audited Supplier', getClientRects: () => [{}]} : null,
+  querySelectorAll: s => s === 'a[href]' ? [{pathname: '/contact-info.html', href: process.argv[2]}] :
+    s === 'a[href^="mailto:"]' ? [{textContent: 'sales@maker.example', getAttribute: () => 'mailto:sales@maker.example'}] : []
+};
+const collect = vm.runInNewContext('(' + fs.readFileSync(process.argv[1], 'utf8') + ')', {document});
+let current = ''; const visited = [];
+const row = url => ({innerText: '500 pieces MOQ', querySelector: selector =>
+  selector.split(',').map(s => s.trim()).includes('.company-name-txt a') ? {innerText: 'Fixture manufacturer', href: url} :
+  selector === '.product-name' ? {innerText: 'Steel bottle'} : null});
+const rows = [row('https://maker.en.made-in-china.com.evil.test/'), row('https://evil.test/'),
+  row('https://maker.en.made-in-china.com:443/'), row('https://user@maker.en.made-in-china.com/'),
+  row('https://maker.en.made-in-china.com/?ads_tp=ppc&ads_id=fixture'), row('https://maker.en.made-in-china.com/')];
+const page = {
+  goto: async url => { current = url; visited.push(url); return {status: () => 200}; }, url: () => current,
+  locator: selector => { if (selector !== 'body' && !selector.split(',').map(s => s.trim()).includes('.list-node')) throw Error('Missing observed list-node layout');
+    return {innerText: async () => 'Public supplier profile', first() { return this; },
+      waitFor: async () => {}, evaluateAll: async fn => fn(rows)}; },
+  evaluate: async fn => fn()
+};
+collect(page).then(result => console.log(JSON.stringify({result, visited}))).catch(error => {console.error(error); process.exit(1);});
+'''
+        for contact, expected in [('https://maker.en.made-in-china.com/contact-info.html?from=profile&source=research', True),
+                                  ('https://maker.en.made-in-china.com.evil.test/contact-info.html', False)]:
+            with self.subTest(contact=contact), tempfile.TemporaryDirectory() as folder:
+                browser = BrowserCollector(session='supplier-vm-test')
+                browser.root = Path(folder)
+                def cli(args, **_kwargs):
+                    if args[0] != 'run-code':
+                        return ''
+                    script = args[1].split('=', 1)[1]
+                    completed = subprocess.run([shutil.which('node'), '-e', harness, script, contact],
+                        capture_output=True, text=True, check=True, timeout=10)
+                    observed = json.loads(completed.stdout)
+                    self.assertEqual(len(observed['visited']), 2)  # Search and one safe, unique profile.
+                    return '### Result\n' + json.dumps(observed['result'])
+                with patch.object(browser, '_cli', side_effect=cli):
+                    result = browser.collect_suppliers({'keyword': 'water bottle'}, {'title': 'Steel bottle'})
+                self.assertEqual(result['status'], 'live', result['notes'])
+                self.assertEqual(len(result['suppliers']), 1)
+                supplier = result['suppliers'][0]
+                self.assertIn('Audited Supplier', supplier['verification'])
+                self.assertEqual(supplier['contact_url'], contact if expected else None)
+                self.assertFalse(list(Path(folder).rglob('suppliers-*.js')))
+
     def test_status_does_not_wait_for_a_research_browser_lock(self):
         collector = BrowserCollector(session='status-test')
         acquired, release = threading.Event(), threading.Event()

@@ -4,9 +4,38 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import subprocess
+import tempfile
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_startup_failure_reads_only_latest_daemon_tail_and_redacts_diagnostics(self):
+        module = self.bootstrap()
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / '.cache/ms-playwright/daemon'
+            old = cache / 'old/marketradar.err'
+            latest = cache / 'latest/marketradar.err'
+            old.parent.mkdir(parents=True)
+            latest.parent.mkdir(parents=True)
+            old.write_text('old launch failure', encoding='utf-8')
+            module.os.utime(old, (1, 1))
+            latest.write_text('ignored prefix ' + 'x' * 7000 + '\nnamespace EPERM\n'
+                              'https://private.example/?token=secret-url\nowner@example.com\n'
+                              'Bearer secret-bearer\nAF_API_KEY=secret-key\n', encoding='utf-8')
+            failure = subprocess.CompletedProcess([], 1, stdout=b'generic CLI failure',
+                                                  stderr=b'node setup failure SECRET=secret-stderr')
+            with patch.object(module.subprocess, 'run', return_value=failure) as run:
+                with self.assertRaises(RuntimeError) as caught:
+                    module.browser_command('attach', {'HOME': directory})
+            detail = str(caught.exception)
+            self.assertIn('namespace EPERM', detail)
+            self.assertIn('node setup failure', detail)
+            self.assertIn('Sandbox remains enabled', detail)
+            for hidden in ('old launch failure', 'ignored prefix', 'private.example', 'owner@example.com',
+                           'secret-url', 'secret-bearer', 'secret-key', 'secret-stderr'):
+                self.assertNotIn(hidden, detail)
+            self.assertLess(len(detail), 5000)
+            run.assert_called_once()
+
     def test_browser_startup_keeps_the_actual_sanitized_failure_reason(self):
         module = self.bootstrap()
         failure = subprocess.CompletedProcess([], 1, stdout=b'Playwright CLI: fixture launch failure', stderr=b'')

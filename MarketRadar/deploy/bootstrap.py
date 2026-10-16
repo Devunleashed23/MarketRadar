@@ -1,6 +1,7 @@
 """Linux container supervisor. Image/runtime smoke tests have not run locally."""
 import os
 from pathlib import Path
+import re
 import signal
 import socket
 import subprocess
@@ -56,6 +57,36 @@ def port_ready(port):
         return False
 
 
+def safe_diagnostic(raw, limit=900):
+    text = raw.decode('utf-8', errors='replace') if isinstance(raw, bytes) else str(raw or '')
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+    text = re.sub(r'(?i)\b(?:https?|wss?)://\S+', '[url]', text)
+    text = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[email]', text)
+    text = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [redacted]', text)
+    text = re.sub(r'''(?i)\b([\w-]*(?:key|token|password|secret)|authorization)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|\S+)''',
+                  r'\1=[redacted]', text)
+    return text.strip()[-limit:]
+
+
+def browser_startup_log(environment):
+    # Read only the pinned CLI's named startup log in this child's cache.
+    cache = environment.get('XDG_CACHE_HOME')
+    if not cache and environment.get('HOME'):
+        cache = str(Path(environment['HOME']) / '.cache')
+    if cache:
+        try:
+            logs = (Path(cache) / 'ms-playwright/daemon').glob('*/marketradar.err')
+            latest = max(logs, key=lambda path: path.stat().st_mtime, default=None)
+            if latest:
+                with latest.open('rb') as stream:
+                    stream.seek(0, 2)
+                    stream.seek(max(0, stream.tell() - 6000))
+                    return 'Browser daemon: ' + safe_diagnostic(stream.read(6000), 2500)
+        except OSError:
+            pass
+    return 'Browser daemon startup log unavailable.'
+
+
 def browser_command(method, environment):
     # Only this child starts/contacts the browser daemon. It never inherits app
     # passwords, provider credentials, or the owner's shell environment.
@@ -66,7 +97,10 @@ def browser_command(method, environment):
     result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=environment,
                             capture_output=True, timeout=75 if method == 'attach' else 15)
     if result.returncode:
-        detail = result.stdout.decode('utf-8', errors='replace').strip()[:1800]
+        details = [safe_diagnostic(result.stdout), safe_diagnostic(result.stderr)]
+        if method == 'attach':
+            details.append(browser_startup_log(environment))
+        detail = ' | '.join(part for part in details if part)
         raise RuntimeError('Managed Chromium could not start or stopped: ' + detail + ' Sandbox remains enabled.')
 
 
