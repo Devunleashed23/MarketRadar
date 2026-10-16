@@ -2,12 +2,66 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import subprocess
 import tempfile
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_root_initializes_only_fixed_storage_then_drops_uid_before_every_child(self):
+        module = self.bootstrap()
+        events, identity = [], {'uid': 0}
+        directories = ('/data', '/data/browser', '/data/profile', '/data/runs', '/data/runtime')
+        paths = {name: Mock() for name in directories}
+        for name, path in paths.items():
+            path.is_symlink.return_value = False
+            path.mkdir.side_effect = lambda *a, name=name, **k: events.append(('mkdir', name))
+            path.chmod.side_effect = lambda *a, name=name, **k: events.append(('chmod', name, a, k))
+
+        def environments():
+            events.append(('validate',))
+            return {}, {}
+
+        def setuid(uid):
+            events.append(('setuid', uid))
+            identity['uid'] = uid
+
+        def child(*args, **kwargs):
+            self.assertEqual(identity['uid'], 10001)
+            events.append(('child',))
+            process = Mock()
+            process.poll.return_value = 0
+            return process
+
+        def browser(*args):
+            self.assertEqual(identity['uid'], 10001)
+            events.append(('browser',))
+
+        stop = Mock()
+        stop.wait.return_value = True
+        with patch.object(module.sys, 'platform', 'linux'), \
+                patch.object(module, 'Path', side_effect=lambda name: paths[str(name)]), \
+                patch.object(module, 'build_environments', side_effect=environments), \
+                patch.multiple(module.os, create=True, geteuid=lambda: identity['uid'],
+                               getuid=lambda: identity['uid'], setuid=setuid,
+                               setgid=lambda gid: events.append(('setgid', gid)),
+                               setgroups=lambda groups: events.append(('setgroups', groups)),
+                               chown=lambda *a, **k: events.append(('chown', a, k)),
+                               umask=lambda mask: events.append(('umask', mask))), \
+                patch.object(module.signal, 'signal'), \
+                patch.object(module.threading, 'Event', return_value=stop), \
+                patch.object(module, 'wait_ready'), \
+                patch.object(module, 'browser_command', side_effect=browser), \
+                patch.object(module.subprocess, 'Popen', side_effect=child):
+            module.main()
+        self.assertEqual(events[:2], [('validate',), ('umask', 0o077)])
+        ownership = [item for item in events if item[0] == 'chown']
+        self.assertEqual(ownership, [('chown', (paths[name], 10001, 10001), {'follow_symlinks': False})
+                                     for name in directories])
+        dropped = events.index(('setuid', 10001))
+        self.assertEqual(events[dropped - 2:dropped], [('setgroups', []), ('setgid', 10001)])
+        self.assertTrue(all(i > dropped for i, item in enumerate(events) if item[0] in ('child', 'browser')))
+
     def test_startup_failure_reads_only_latest_daemon_tail_and_redacts_diagnostics(self):
         module = self.bootstrap()
         with tempfile.TemporaryDirectory() as directory:

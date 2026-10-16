@@ -41,7 +41,9 @@ COPY MarketRadar/deploy/ /app/MarketRadar/deploy/
 COPY subagents/__init__.py subagents/amazon_market_agent_v2.py subagents/listing_agent_v2.py /app/subagents/
 COPY models.py /app/models.py
 
-USER 10001:10001
+# Bootstrap fixes fresh volume ownership, then permanently drops to UID 10001
+# before starting the app, desktop, or sandboxed browser.
+USER 0:0
 VOLUME ["/data"]
 EXPOSE 8080
 HEALTHCHECK --interval=20s --timeout=3s --start-period=100s --retries=3 \

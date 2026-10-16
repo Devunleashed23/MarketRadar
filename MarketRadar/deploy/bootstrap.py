@@ -104,17 +104,36 @@ def browser_command(method, environment):
         raise RuntimeError('Managed Chromium could not start or stopped: ' + detail + ' Sandbox remains enabled.')
 
 
+def prepare_storage():
+    """Initialize only our mount directories, then permanently drop root."""
+    root = os.geteuid() == 0
+    if not root and os.geteuid() != 10001:
+        raise RuntimeError('MarketRadar must run as UID/GID 10001 after storage initialization.')
+    for directory in ('/data', '/data/browser', '/data/profile', '/data/runs', '/data/runtime'):
+        path = Path(directory)
+        if path.is_symlink():
+            raise RuntimeError('MarketRadar storage directories cannot be symlinks.')
+        try:
+            path.mkdir(exist_ok=True)
+            if root:
+                os.chown(path, 10001, 10001, follow_symlinks=False)
+            path.chmod(0o700, follow_symlinks=False)
+        except PermissionError as exc:
+            raise RuntimeError('The mounted /data volume must allow initialization for UID/GID 10001.') from exc
+    if root:
+        os.setgroups([])
+        os.setgid(10001)
+        os.setuid(10001)
+    if os.geteuid() != 10001 or os.getuid() != 10001:
+        raise RuntimeError('MarketRadar could not permanently drop root privileges.')
+
+
 def main():
-    if sys.platform != 'linux' or os.geteuid() == 0:
-        raise RuntimeError('Run this Linux image as the non-root marketradar user.')
+    if sys.platform != 'linux':
+        raise RuntimeError('Run this image on Linux.')
     app_env, desktop_env = build_environments()
     os.umask(0o077)
-    for directory in ('/data/browser', '/data/profile', '/data/runs', '/data/runtime'):
-        try:
-            Path(directory).mkdir(parents=True, exist_ok=True)
-            Path(directory).chmod(0o700)
-        except PermissionError as exc:
-            raise RuntimeError('The mounted /data volume must be writable by UID/GID 10001; prepare ownership on the host.') from exc
+    prepare_storage()
     stop, children = threading.Event(), []
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: stop.set())

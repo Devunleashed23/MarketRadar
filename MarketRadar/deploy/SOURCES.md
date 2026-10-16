@@ -23,9 +23,9 @@ The host-independent supervisor tests do not replace the container smoke test.
   `playwright`/`playwright-core@1.63.0-alpha-2026-08-05` dependencies.
 
 Expose only container port **8080** through an HTTPS ingress. Keep **5900**, **6080**
-and **8877** internal. The named/bind-mounted `/data` volume must be owned by
-**UID/GID 10001** and writable by that user; bootstrap does not start as root or
-repair host volume ownership. The volume contains private browser login state
+and **8877** internal. Bootstrap starts as root only to prepare the fixed `/data`
+directories, then drops supplementary groups and permanently sets **UID/GID 10001**
+before starting services. It never recursively changes ownership. The volume contains private browser login state
 and report history. Use one replica for this single-owner browser demo.
 
 The host must permit Chromium's sandbox and required user namespaces. The CI
