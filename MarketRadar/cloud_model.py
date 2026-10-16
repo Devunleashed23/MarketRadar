@@ -129,7 +129,8 @@ class CloudModel:
             raise ValueError("The inference request exceeds the size limit.")
         return urllib.request.Request(ENDPOINT, data=payload, method="POST", headers={
             "Authorization": "Bearer " + self._api_key, "X-Organization-Id": self._organization,
-            "Content-Type": "application/json", "Accept": "application/json"})
+            "Content-Type": "application/json", "Accept": "application/json",
+            "User-Agent": "MarketRadar/0.1 (hackathon research application)"})
 
     def _dispatch(self, request, timeout):
         result = queue.Queue(maxsize=1)
