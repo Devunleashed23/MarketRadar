@@ -106,7 +106,10 @@ def run_research(brief, provider, browser, *, stop=None, emit=None, on_evidence=
             system_message=SystemMessage(content=system + '\nCurrent workflow stage: ' + instruction
                 + '\nHuman direction: ' + json.dumps((session or {}).get('human_feedback', ''))
                 + '\nApproved product: ' + json.dumps((session or {}).get('approved_product'))
-                + '\nSupplier evidence: ' + json.dumps((session or {}).get('suppliers')))))
+                + '\nSupplier evidence: ' + json.dumps((session or {}).get('suppliers'))
+                + ('\nSaved report: ' + json.dumps(final) + '\nObserved products: ' + json.dumps([
+                    {key: p.get(key) for key in ('asin', 'title', 'features')} for p in
+                    records.get('marketplace', {}).get('data', {}).get('products', [])]) if final else ''))))
 
     @before_model(can_jump_to=['end'])
     def finish_when_saved(state, runtime):
