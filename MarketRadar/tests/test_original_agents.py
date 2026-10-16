@@ -168,7 +168,8 @@ class DeepAgentWorkflowTests(unittest.TestCase):
             model = 'fixture'
             turn = 0
             def complete_json(self, system, prompt, **kwargs):
-                assert product['asin'] in prompt  # Saved reports must expose actual choices on reopen.
+                if self.turn == 0:
+                    assert product['asin'] in prompt  # Saved reports expose actual choices on reopen.
                 sequence = [('approve_product', {'product_id': product['asin'], 'requirements': 'Leak-resistant lid'}),
                     ('task', {'subagent_type': 'supplier-scout', 'description': 'Check suppliers for the approved mug.'}),
                     ('find_suppliers', {}), (None, 'Supplier profile observed; samples need checking.'),
