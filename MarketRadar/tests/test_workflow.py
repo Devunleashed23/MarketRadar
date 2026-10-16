@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from MarketRadar.core import Radar, validate_brief, validate_report
 
@@ -45,8 +45,12 @@ class WorkflowTests(unittest.TestCase):
             external = Mock(side_effect=AssertionError('Optional fastn must not be constructed.'))
             radar = Radar(folder, model_factory=lambda **kw: model,
                           browser_factory=lambda **kw: browser, fastn_factory=external)
-            run = radar.start({'keyword': 'travel mug', 'mode': 'live'})
-            radar.wait(run['id'])
+            # This test isolates optional enrichment; the real graph is covered separately.
+            outcome = (browser.collect.return_value, {'summary': 'Account attention required.',
+                       'observations': [], 'limitations': [], 'recommendations': []})
+            with patch('MarketRadar.agents.run_research', return_value=outcome):
+                run = radar.start({'keyword': 'travel mug', 'mode': 'live'})
+                radar.wait(run['id'])
             result = radar.get(run['id'])
             self.assertFalse(result['use_fastn'])
             self.assertEqual(result['state'], 'completed', result['error'])

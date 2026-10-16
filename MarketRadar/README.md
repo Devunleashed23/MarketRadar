@@ -20,34 +20,39 @@ The local app uses the existing Python environment, Node.js, Playwright CLI inst
 | --- | --- |
 | `__main__.py` | Starts `server.main()`. |
 | `server.py` | Serves the dashboard/API; a research POST calls `Radar.start()`. |
-| `core.py` | Runs the workflow in `Radar._execute()`, validates reports, saves history and human review. |
-| `browser.py` | Collects Google evidence and plans/runs the Amazon collection. |
+| `core.py` | Manages background jobs, report validation, history and human review. |
+| `agents.py` | Defines the DeepAgents orchestrator, two specialists and their LangChain tools. Start here to understand the agent architecture. |
+| `browser.py` | Model-free Playwright tools: Google observations/actions and scripted Amazon collection. |
 | `amazon_research.js` | Fixed Playwright script: search Amazon, read products, features and embedded reviews. No LLM calls. |
-| `models.py` | Local `CodexModel.complete_json()` provider adapter. |
+| `models.py` | Local Codex subscription provider plus `ResearchChatModel`, the LangChain model adapter. |
 | `cloud_model.py` | Cloud `CloudModel.complete_json()` provider adapter. |
 | `static/` | HTML, CSS and JavaScript for forms, progress, reports and history. |
 
-The parent `models.py` contains `get_research_model()`, which selects the local or cloud adapter. The two original files in the parent `subagents/` folder supply `analyze_market_evidence()` and `suggest_marketplace_opportunities()`. Their older DeepAgents runners are not used by this dashboard.
+The parent `models.py` contains `get_research_model()`, which selects the local or cloud provider. Evidence preparation and citation validation reuse helpers from the original `subagents/amazon_market_agent_v2.py`. The orchestrator now produces findings and follow-ups in one validated report.
 
 ## Main workflow and LLM calls
 
 ```text
 Dashboard -> server.py -> Radar.start() -> background thread -> Radar._execute()
-    1. Create the selected model adapter.
-    2. BrowserCollector.collect():
-         Google Planner/Trends: observe -> model decision -> validate -> browser action.
-         Amazon: one model call chooses an optional alternative search.
-         Fixed Amazon script collects products, features and reviews.
-    3. Original research agent: one model call produces the structured findings.
-    4. Original listing agent: one model call suggests up to three follow-ups.
-    5. Validate source/review citations, save the report, await human review.
+    -> agents.run_research() creates a DeepAgents orchestrator
+         task("google-demand") -> open_google / google_step tools
+         task("amazon-reviews") -> research_amazon tool -> fixed Playwright script
+         read_evidence() -> canonical source records and reviews
+         finalize_report(report) -> validate citations and end the graph
+    -> save the report -> human review
 ```
 
-This is a staged Python workflow. The repeating agent decision loop is the Google collector's `for step in range(budget)` in `browser.py`. It sends the current page snapshot to `model.complete_json()`, validates the returned action, runs Playwright CLI, then observes the updated page. A source stops on extraction, access problems, cancellation or its step limit.
+`create_deep_agent()` builds the LangGraph graph and its model/tool loop. The main agent delegates with DeepAgents' `task` tool. Its Google specialist owns Keyword Planner and Trends; its Amazon specialist chooses searches and calls the fixed scraper. Each specialist has only its own tools. Requests run sequentially because the browser session is shared.
+
+LangChain's `@tool` defines typed callable tools; LangGraph carries messages, tool calls and results between turns. `ResearchChatModel.bind_tools()` exposes tool schemas to the existing JSON provider and turns its response into a LangChain `AIMessage`. LangGraph executes those calls. The Codex subprocess itself has tools disabled. No handwritten LLM loop remains in `browser.py`.
+
+The orchestrator reads canonical tool evidence before finalizing. Subagent summaries cannot replace source records. `finalize_report` validates the existing fixed report format against real evidence/review IDs. A validation error returns correction feedback, with at most three submissions; a successful submission ends the graph before another model call. Small LangChain middleware requires tool use until the assigned sources have been attempted. Built-in shell/filesystem tools and the general-purpose subagent are disabled; the graph uses an in-memory state backend.
 
 Amazon uses a different approach: Python inserts validated query/ASIN data into the checked-in JavaScript template and runs it through Playwright CLI. The model never writes Amazon selectors or browser code. Collection is bounded to two searches, three products, and twelve sampled reviews per product; review bodies are limited to 1,200 characters.
 
-The analysis and opportunity stages share the same model object. Local calls invoke the official Codex CLI with tools disabled and parse its JSON response. Cloud calls use Alternate Clouds inference. A live run allows at most twenty model calls in total; Google gets at most six decision steps per source. Sample mode bypasses the model entirely.
+All agents share one provider and a total cap of thirty model calls. Google gets at most six action decisions per source. The graph recursion limit is fifty. Cancellation reaches the provider and browser tools through the run's stop event. Sample mode bypasses the graph and model entirely. Dependencies are pinned in `requirements.txt` to the versions used by this refactor.
+
+Framework references: [DeepAgents subagents](https://docs.langchain.com/oss/python/deepagents/subagents), [customization](https://docs.langchain.com/oss/python/deepagents/customization), [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview).
 
 ## Report and evidence
 
@@ -55,7 +60,7 @@ Every report contains summary, observations, products with demand signals, compl
 
 Google Trends measures relative interest, not sales. Keyword Planner competition describes Google advertising. Amazon's bought-in-past-month labels are recorded as displayed. Reviews can pool variants/countries and are not a representative survey. Google country/language/date selections do not change Amazon delivery settings or filter its reviews. Unverified filters and missing sources remain disclosed.
 
-The latest local Amazon workflow completed on 16 October 2026 with four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. It returned three products with demand signals, five complaints, two explicit feature requests, three gap hypotheses and three follow-ups.
+The DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. It used fifteen model turns and produced a validated report with two follow-ups. Source-filter limitations remain disclosed. All 111 tests pass; the graph fixture also verifies delegation, real tool execution, citation correction and termination without another model call.
 
 ## Supporting files
 

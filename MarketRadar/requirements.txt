@@ -1,2 +1,6 @@
-# The existing project .venv already has this version. No LLM API package/key required.
+# Exact versions already installed in the local demo environment.
+deepagents==0.7.13
+langchain==1.4.0
+langchain-core==1.6.2
+langgraph==1.2.11
 mcp==1.29.0

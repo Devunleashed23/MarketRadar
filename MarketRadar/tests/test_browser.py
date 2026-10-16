@@ -2,6 +2,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from MarketRadar.browser import BrowserCollector, BrowserError, safe_marketplace_url
 
@@ -10,14 +11,6 @@ BRIEF = {
     "keyword": "travel mug & flask", "marketplace": "amazon", "country": "US",
     "language": "English", "date_range": "today 12-m", "max_browser_steps": 2,
 }
-
-
-class FakeModel:
-    def __init__(self, response):
-        self.response = response
-
-    def complete_json(self, system, prompt, **kwargs):
-        return self.response
 
 
 class FakeBrowser(BrowserCollector):
@@ -45,6 +38,19 @@ class FakeBrowser(BrowserCollector):
 
 
 class BrowserTests(unittest.TestCase):
+    def setUp(self):
+        # Loading waits are exercised at the CLI boundary without wall-clock delay.
+        sleeper = patch("MarketRadar.browser.time.sleep")
+        sleeper.start()
+        self.addCleanup(sleeper.stop)
+
+    @staticmethod
+    def extract(collector, response, source="keyword_planner"):
+        observation = collector.open_google(source, BRIEF)
+        if observation["status"] == "running":
+            observation = collector.google_step(response)
+        return observation["evidence"]
+
     def test_rejects_non_public_and_deceptive_marketplace_urls(self):
         for url in ["http://www.amazon.com/dp/123", "https://amazon.com.evil.test/dp/123",
                     "https://sellercentral.amazon.com/", "https://www.amazon.com/ap/signin",
@@ -67,8 +73,8 @@ class BrowserTests(unittest.TestCase):
     def test_blocks_campaign_action_even_if_model_requests_it(self):
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {"keyword_planner": '- button "Create campaign" [ref=e3]'})
-            evidence = collector.collect(BRIEF, FakeModel({"action": "click", "ref": "e3"}))
-        self.assertEqual(evidence[0]["status"], "failed")
+            evidence = self.extract(collector, {"action": "click", "ref": "e3"})
+        self.assertEqual(evidence["status"], "failed")
         self.assertFalse(any(command[0] == "click" for command in collector.commands))
 
     def test_preserves_observed_keyword_ranges_and_drops_invented_metrics(self):
@@ -80,13 +86,13 @@ class BrowserTests(unittest.TestCase):
         ]}}
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {"keyword_planner": snapshot})
-            evidence = collector.collect(BRIEF, FakeModel(response))
-        rows = evidence[0]["data"]["keywords"]
-        self.assertEqual(evidence[0]["status"], "live")
+            evidence = self.extract(collector, response)
+        rows = evidence["data"]["keywords"]
+        self.assertEqual(evidence["status"], "live")
         self.assertEqual(rows[0]["volume"], "1K – 10K")
         self.assertIsNone(rows[1]["volume"])
         self.assertEqual(len(rows), 2)
-        self.assertIn("captured_at", evidence[0])
+        self.assertIn("captured_at", evidence)
 
     def test_keyword_metrics_cannot_be_borrowed_from_another_observed_row(self):
         snapshot = ('- row "travel mug 1K Low $0.50" [ref=e1]\n'
@@ -116,17 +122,13 @@ class BrowserTests(unittest.TestCase):
                                         '- heading "No data available"')
         self.assertEqual(data["notes"], ["No data available"])
 
-    def test_rate_limit_is_explicit_and_does_not_use_a_model_call(self):
-        class NoModel:
-            def complete_json(self, *args, **kwargs):
-                raise AssertionError("A rate-limited or empty source must not consume model quota.")
-
+    def test_rate_limit_is_terminal_without_an_agent_step(self):
         for marker in ["Too Many Requests", "Error429", "Error 429", "HTTP 429"]:
             with self.subTest(marker=marker), tempfile.TemporaryDirectory() as root:
                 collector = FakeBrowser(root, {"google_trends": f'- heading "{marker}"'})
-                result = collector._collect_source('google_trends', BRIEF,
-                    collector.source_url('google_trends', BRIEF), NoModel(), None)
+                result = collector.open_google("google_trends", BRIEF)
                 self.assertEqual(result["status"], "rate_limited")
+                self.assertEqual(result["steps_remaining"], BRIEF["max_browser_steps"])
 
     def test_login_and_setup_are_reported_without_fabricated_success(self):
         for snapshot, expected in [('- heading "Sign in to Google Ads"', "login_required"),
@@ -134,23 +136,31 @@ class BrowserTests(unittest.TestCase):
                                    ('- heading "Verify you are human"', "challenge")]:
             with self.subTest(expected=expected), tempfile.TemporaryDirectory() as root:
                 collector = FakeBrowser(root, {"keyword_planner": snapshot})
-                result = collector.collect(BRIEF, FakeModel({"action": "done", "status": "live", "data": {}}))
-                self.assertEqual(result[0]["status"], expected)
-                self.assertEqual(result[0]["data"]["keywords"], [])
+                result = self.extract(collector, {"action": "done", "status": "live", "data": {}})
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["data"]["keywords"], [])
 
     def test_rejects_model_code_and_unobserved_refs(self):
         for action in [{"action": "eval", "value": "document.cookie"}, {"action": "click", "ref": "e999"}]:
             with self.subTest(action=action), tempfile.TemporaryDirectory() as root:
                 collector = FakeBrowser(root, {"keyword_planner": '- button "Get results" [ref=e1]'})
-                evidence = collector.collect(BRIEF, FakeModel(action))
-                self.assertEqual(evidence[0]["status"], "failed")
+                evidence = self.extract(collector, action)
+                self.assertEqual(evidence["status"], "failed")
                 self.assertFalse(any(c[0] in ("eval", "run-code", "click") for c in collector.commands))
 
     def test_empty_extraction_is_never_marked_live(self):
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {"keyword_planner": '- heading "Keyword Planner"'})
-            result = collector.collect(BRIEF, FakeModel({"action": "done", "status": "live", "data": {}}))
-        self.assertEqual(result[0]["status"], "no_results")
+            result = self.extract(collector, {"action": "done", "status": "live", "data": {}})
+        self.assertEqual(result["status"], "no_results")
+
+    def test_planner_home_requires_discovery_before_empty_completion(self):
+        with tempfile.TemporaryDirectory() as root:
+            collector = FakeBrowser(root, {'keyword_planner': '- button "Discover new keywords" [ref=e1]'})
+            collector.open_google('keyword_planner', BRIEF)
+            result = collector.google_step({'action': 'done', 'data': {}})
+        self.assertEqual(result['status'], 'running')
+        self.assertIn('Discover new keywords', result['hint'])
 
     def test_non_google_sources_cannot_trigger_model_browser_actions(self):
         collector = BrowserCollector()
@@ -161,18 +171,8 @@ class BrowserTests(unittest.TestCase):
                 with self.subTest(action=action, source=source), self.assertRaises(BrowserError):
                     collector._action_args(action, source, '- textbox "Search" [ref=e1]', BRIEF, None)
 
-    def test_amazon_navigation_uses_one_planning_call_and_fixed_script(self):
-        class CountingModel(FakeModel):
-            calls = 0
-
-            def complete_json(self, *args, **kwargs):
-                self.calls += 1
-                return self.response
-
+    def test_amazon_navigation_uses_only_fixed_script_and_bounded_searches(self):
         class ScriptBrowser(FakeBrowser):
-            def _collect_source(self, source, *args, **kwargs):
-                return {'id': source, 'source': source, 'status': 'no_results', 'data': {}}
-
             def _amazon_page(self, config, stop=None):
                 self.commands.append(config)
                 if config['action'] == 'search':
@@ -185,24 +185,25 @@ class BrowserTests(unittest.TestCase):
                     {'asin': config['asin'], 'title': 'Observed product', 'features': ['Steel body'],
                      'reviews': [{'id': config['asin'] + '-review', 'body': 'Lid leaked.'}]}]}
 
-        model = CountingModel({'searches': ['leakproof flask']})
         with tempfile.TemporaryDirectory() as root:
             browser = ScriptBrowser(root, {})
-            result = browser.collect(BRIEF, model)
-        self.assertEqual(len(result), 3)
-        self.assertEqual(model.calls, 1)
+            result = browser.collect_amazon(BRIEF, [BRIEF['keyword'], 'leakproof flask', 'ignored third search'])
         actions = [command for command in browser.commands if isinstance(command, dict)]
         self.assertEqual([action['action'] for action in actions], ['search', 'search', 'product', 'product', 'product'])
+        self.assertEqual([action['query'] for action in actions[:2]], [BRIEF['keyword'], 'leakproof flask'])
         self.assertEqual([action['asin'] for action in actions[2:]], ['B000000001', 'B000000003', 'B000000004'])
-        self.assertEqual(result[-1]['status'], 'live')
-        self.assertEqual(len(result[-1]['data']['products']), 3)
+        self.assertEqual(result['status'], 'live')
+        self.assertEqual(len(result['data']['products']), 3)
 
     def test_requested_settings_are_not_claimed_verified_for_planner(self):
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {"keyword_planner": '- heading "Keyword Planner"'})
-            result = collector.collect(BRIEF, FakeModel({"action": "done", "data": {}}))
-        self.assertEqual(result[0]["settings_verified"], {"country": False, "language": False, "date_range": False})
-        self.assertTrue(result[1]["settings_verified"]["country"])
+            result = self.extract(collector, {"action": "done", "data": {}})
+        self.assertEqual(result["settings_verified"], {"country": False, "language": False, "date_range": False})
+        with tempfile.TemporaryDirectory() as root:
+            collector = FakeBrowser(root, {"google_trends": '- heading "No results"'})
+            trends = collector.open_google("google_trends", BRIEF)["evidence"]
+        self.assertTrue(trends["settings_verified"]["country"])
 
     def test_trends_csv_preserves_comparison_metadata_zero_and_less_than_one(self):
         # Representative Google Trends UI CSV layout; these are test fixtures, never live fallback data.
@@ -317,10 +318,10 @@ class BrowserTests(unittest.TestCase):
         snapshot = '- heading "Interest over time"\n- button "Download CSV" [ref=e1]'
         with tempfile.TemporaryDirectory() as root:
             collector = DownloadBrowser(root, {"google_trends": snapshot})
-            result = collector.collect(BRIEF, FakeModel({"action": "done", "data": {}}))
-            self.assertEqual(result[1]["status"], "live")
-            self.assertEqual(result[1]["data"]["trends"][0]["value"], "<1")
-            self.assertIn("sha256", result[1]["download"])
+            result = collector.open_google("google_trends", BRIEF)["evidence"]
+            self.assertEqual(result["status"], "live")
+            self.assertEqual(result["data"]["trends"][0]["value"], "<1")
+            self.assertIn("sha256", result["download"])
 
     def test_location_filter_accepts_the_requested_country_name(self):
         collector = BrowserCollector()
@@ -333,7 +334,9 @@ class BrowserTests(unittest.TestCase):
         stop.set()
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {})
-            result = collector.collect(BRIEF, FakeModel({"action": "snapshot"}), stop=stop)
+            google = collector.open_google("keyword_planner", BRIEF, stop=stop)["evidence"]
+            amazon = collector.collect_amazon(BRIEF, [], stop=stop)
+            result = [google, amazon]
         self.assertEqual(collector.commands, [])
         self.assertTrue(all(row["status"] == "failed" for row in result))
 
@@ -348,10 +351,28 @@ class BrowserTests(unittest.TestCase):
     def test_step_budget_prevents_unbounded_browser_loop(self):
         with tempfile.TemporaryDirectory() as root:
             collector = FakeBrowser(root, {"keyword_planner": '- heading "Keyword Planner"'})
-            result = collector.collect(BRIEF, FakeModel({"action": "snapshot"}))
-        snapshots = [c for c in collector.commands if c[0] == "snapshot"]
-        self.assertLessEqual(len(snapshots), BRIEF["max_browser_steps"])
-        self.assertEqual(result[0]["status"], "failed")
+            observation = collector.open_google("keyword_planner", BRIEF)
+            first_action = len(collector.commands)
+            while observation["status"] == "running":
+                observation = collector.google_step({"action": "snapshot"})
+            # A terminal source is idempotent and cannot start another action.
+            collector.google_step({"action": "snapshot"})
+        self.assertEqual(len(collector.commands) - first_action, BRIEF["max_browser_steps"])
+        self.assertEqual(observation["status"], "failed")
+        self.assertEqual(observation["steps_remaining"], 0)
+
+    def test_google_sources_must_finish_before_switching(self):
+        with tempfile.TemporaryDirectory() as root:
+            collector = FakeBrowser(root, {"keyword_planner": '- heading "Keyword Planner"',
+                                           "google_trends": '- heading "No results"'})
+            observation = collector.open_google("keyword_planner", BRIEF)
+            self.assertEqual(observation["status"], "running")
+            self.assertIn("snapshot", observation)
+            self.assertIsNone(observation["evidence"])
+            with self.assertRaisesRegex(BrowserError, "Finish the active"):
+                collector.open_google("google_trends", BRIEF)
+            collector.google_step({"action": "done", "data": {}})
+            self.assertEqual(collector.open_google("google_trends", BRIEF)["status"], "no_results")
 
 
 if __name__ == "__main__":

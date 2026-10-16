@@ -228,6 +228,9 @@ class Radar:
                 raise RuntimeError('Research cancelled.')
         def emit(kind, **fields):
             if isinstance(kind, dict):
+                stage = kind.get('source')
+                if stage in ('research_agent', 'opportunity_agent'):
+                    self._change(identity, state='analyzing' if stage == 'research_agent' else 'recommending')
                 self._event(identity, kind.get('source', kind.get('type', 'browser')),
                             kind.get('message', kind.get('status', 'Browser observation')))
             else:
@@ -270,10 +273,10 @@ class Radar:
             else:
                 self._event(identity, 'research_brief', 'Using the research brief you supplied; optional fastn enrichment is off.')
             if self.model_factory:
-                model = self.model_factory(emit=emit, max_calls=20)
+                model = self.model_factory(emit=emit, max_calls=30)
             else:
                 from models import get_research_model
-                model = get_research_model(emit=emit, max_calls=20)
+                model = get_research_model(emit=emit, max_calls=30)
             check()
             if self.browser_factory:
                 browser = self.browser_factory(emit=emit)
@@ -281,34 +284,14 @@ class Radar:
                 from .browser import BrowserCollector
                 browser = BrowserCollector(emit=emit)
             self._change(identity, state='collecting')
-            evidence = browser.collect(brief, model, stop=stop)
-            check()
-            if not isinstance(evidence, list) or len(evidence) > 10:
-                raise ValueError('Collector returned invalid evidence.')
-            for record in evidence:
-                if not isinstance(record, dict) or not record.get('id') or not record.get('source'):
-                    raise ValueError('Each source needs an evidence ID and type.')
-            self._change(identity, evidence=evidence)
+            from .agents import run_research
+            agent_brief = dict(brief)
+            workspace_context = self.get(identity).get('fastn_context')
+            if workspace_context is not None:
+                agent_brief['workspace_context'] = workspace_context
+            evidence, report = run_research(agent_brief, model, browser, stop=stop, emit=emit,
+                on_evidence=lambda records: self._change(identity, evidence=records))
             successes = [e for e in evidence if e.get('status') in ('live', 'imported')]
-            if not successes:
-                report = validate_report({'summary': 'Research needs account or browser attention before meaningful findings are available.',
-                          'observations': [], 'recommendations': [],
-                          'limitations': [f"{e['source']}: {e.get('status', 'unavailable')}" for e in evidence]}, evidence)
-            else:
-                self._change(identity, state='analyzing')
-                from subagents.amazon_market_agent_v2 import analyze_market_evidence
-                from subagents.listing_agent_v2 import suggest_marketplace_opportunities
-                agent_brief = dict(brief)
-                workspace_context = self.get(identity).get('fastn_context')
-                if workspace_context is not None:
-                    agent_brief['workspace_context'] = workspace_context
-                self._event(identity, 'research_agent', 'The original market-research agent is analyzing collected evidence.')
-                analysis = analyze_market_evidence(agent_brief, evidence, model, timeout=90, stop=stop)
-                check()
-                self._change(identity, state='recommending')
-                self._event(identity, 'opportunity_agent', 'The original listing agent is proposing evidence-backed follow-ups for human review.')
-                actions = suggest_marketplace_opportunities(agent_brief, evidence, analysis, model, timeout=90, stop=stop)
-                report = validate_report(dict(analysis, recommendations=actions.get('recommendations', [])), evidence)
             check()
             if any(e.get('status') not in ('live', 'imported') for e in evidence):
                 report['limitations'].append('Some sources were unavailable; this is a partial evidence report.')

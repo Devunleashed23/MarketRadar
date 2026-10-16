@@ -111,5 +111,72 @@ class OriginalAgentStageTests(unittest.TestCase):
         self.assertEqual(evidence, original)
 
 
+class DeepAgentWorkflowTests(unittest.TestCase):
+    def test_real_graph_delegates_executes_tools_and_validates_citations(self):
+        from MarketRadar.agents import run_research
+        from MarketRadar.browser import BrowserCollector
+
+        planner = copy.deepcopy(EVIDENCE[0])
+        trends = {'id': 'trends-live', 'source': 'google_trends', 'status': 'live', 'data': {'trends': []}}
+        amazon = {'id': 'amazon-research', 'source': 'marketplace', 'status': 'live',
+                  'data': {'products': [{'asin': 'B000000001', 'title': 'Fixture mug', 'reviews': [
+                      {'id': 'R-FIXTURE', 'body': 'The lid leaks.'}]}]}}
+        report = dict(ANALYSIS, complaints=[{'title': 'Leaking lid', 'detail': 'One fixture buyer reports leakage.',
+            'evidence_ids': ['amazon-research'], 'review_ids': ['R-FIXTURE']}], recommendations=[])
+
+        class ScriptedProvider:
+            model = 'fixture'
+
+            def __init__(self):
+                self.turn = 0
+                self.requests = []
+
+            def complete_json(self, system, prompt, **kwargs):
+                request = json.loads(prompt)
+                self.requests.append(request)
+                sequence = [
+                    ('task', {'subagent_type': 'google-demand', 'description': 'Collect both Google sources.'}),
+                    ('open_google', {'source': 'keyword_planner'}),
+                    ('google_step', {'decision': {'action': 'done', 'data': planner['data']}}),
+                    ('open_google', {'source': 'google_trends'}),
+                    (None, 'Google collection complete.'),
+                    ('task', {'subagent_type': 'amazon-reviews', 'description': 'Research mug reviews.'}),
+                    ('research_amazon', {'searches': []}),
+                    (None, 'Fixture review R-FIXTURE reports leakage.'),
+                    ('read_evidence', {}),
+                    ('finalize_report', {'report': dict(report, recommendations=[{
+                        'id': 'bad', 'title': 'Bad reference', 'reason': 'Fixture correction', 'evidence_ids': ['missing-source']}])}),
+                    ('finalize_report', {'report': report})]
+                name, args = sequence[self.turn]
+                self.turn += 1
+                available = {entry['function']['name'] for entry in request['available_tools']}
+                assert not available.intersection({'execute', 'read_file', 'write_file', 'ls', 'grep'})
+                if name is None:
+                    return {'content': args, 'tool_calls': []}
+                assert name in available, (name, available)
+                return {'content': '', 'tool_calls': [{'name': name, 'args': json.dumps(args), 'id': f'fixture-{self.turn}'}]}
+
+        class FixtureBrowser:
+            def open_google(self, source, brief, stop=None):
+                if source == 'google_trends':
+                    return {'source': source, 'status': 'live', 'evidence': trends}
+                return {'source': source, 'status': 'running', 'snapshot': 'Fixture keyword row', 'evidence': None}
+
+            def google_step(self, decision, stop=None):
+                assert decision['action'] == 'done'
+                return {'source': 'keyword_planner', 'status': 'live', 'evidence': planner}
+
+            def collect_amazon(self, brief, searches, stop=None):
+                assert searches == []
+                return amazon
+
+        provider = ScriptedProvider()
+        evidence, output = run_research(BRIEF, provider, FixtureBrowser())
+        self.assertEqual(provider.turn, 11)  # Correct one citation, then exit without another model call.
+        self.assertEqual({row['id'] for row in evidence}, {'planner-live', 'trends-live', 'amazon-research'})
+        self.assertEqual(output['complaints'][0]['review_ids'], ['R-FIXTURE'])
+        self.assertFalse(hasattr(BrowserCollector, '_collect_source'))
+
+
 if __name__ == '__main__':
     unittest.main()
