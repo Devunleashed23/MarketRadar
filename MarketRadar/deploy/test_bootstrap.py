@@ -2,9 +2,18 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from unittest.mock import patch
+import subprocess
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_browser_startup_keeps_the_actual_sanitized_failure_reason(self):
+        module = self.bootstrap()
+        failure = subprocess.CompletedProcess([], 1, stdout=b'Playwright CLI: fixture launch failure', stderr=b'')
+        with patch.object(module.subprocess, 'run', return_value=failure):
+            with self.assertRaisesRegex(RuntimeError, 'fixture launch failure.*Sandbox remains enabled'):
+                module.browser_command('attach', {})
+
     def bootstrap(self):
         spec = importlib.util.spec_from_file_location('radar_bootstrap', Path(__file__).with_name('bootstrap.py'))
         module = importlib.util.module_from_spec(spec)

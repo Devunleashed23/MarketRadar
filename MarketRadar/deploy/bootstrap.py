@@ -61,11 +61,13 @@ def browser_command(method, environment):
     # passwords, provider credentials, or the owner's shell environment.
     script = ('from MarketRadar.browser import BrowserCollector; import sys; '
               f'result=BrowserCollector().{method}(); '
+              'print(result.get("message", ""), flush=True) if not result.get("connected") else None; '
               'sys.exit(0 if result.get("connected") else 1)')
     result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=environment,
                             capture_output=True, timeout=75 if method == 'attach' else 15)
     if result.returncode:
-        raise RuntimeError('Managed Chromium could not start or stopped. Verify host sandbox/user-namespace support; sandbox remains enabled.')
+        detail = result.stdout.decode('utf-8', errors='replace').strip()[:1800]
+        raise RuntimeError('Managed Chromium could not start or stopped: ' + detail + ' Sandbox remains enabled.')
 
 
 def main():
