@@ -24,3 +24,5 @@ For a live presentation: sign in as `owner`, verify Keyword Planner access in th
 Only the HTTPS app port is exposed. VNC and browser-control services bind to loopback. The container does not include a Codex login or local browser profile. Model credentials and dashboard passwords are stripped from browser subprocesses. This is one shared demo workspace, not a multi-tenant product.
 
 Deployment is only complete after the live URL, cloud browser and one real inference call succeed. A created cloud service or successful source build alone does not establish this.
+
+Verified deployment: [MarketRadar](https://alternate-stormy-portal-764-docker-app.alternatefutures.ai), standard Akash hosting, image `a0967ed`. Public health, access roles, owner-only VNC WebSocket, real cloud inference and a native DeepAgents approval pause passed. The saved Owala research and human approval were imported privately with original evidence dates; the new cloud inquiry is awaiting human review. Fresh Google Ads collection still needs manual cloud sign-in, and Trends can return a disclosed rate limit. Local login instructions are in `.data/cloud-login.txt`, excluded from publication.

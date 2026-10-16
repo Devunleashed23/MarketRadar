@@ -2,6 +2,8 @@
 
 Product research using Google Keyword Planner, Google Trends, Amazon.com features/reviews, and a human-reviewed report. The local demo is at http://127.0.0.1:8877.
 
+Cloud demo: [MarketRadar](https://alternate-stormy-portal-764-docker-app.alternatefutures.ai). Owner/viewer credentials are in the private local `.data/cloud-login.txt`; credentials and browser profiles are excluded from Git and container images.
+
 ## Start
 
 Run from the parent project directory:
@@ -73,7 +75,9 @@ Every report contains summary, observations, products with demand signals, compl
 
 Google Trends measures relative interest, not sales. Keyword Planner competition describes Google advertising. Amazon's bought-in-past-month labels are recorded as displayed. Reviews can pool variants/countries and are not a representative survey. Google country/language/date selections do not change Amazon delivery settings or filter its reviews. Unverified filters and missing sources remain disclosed.
 
-The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. Checks cover native graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. A local supplier check read three real profiles and two displayed audit badges. Configured email delivery and the cloud browser still need live verification.
+The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. Checks cover native graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. Supplier collection read three real profiles and two displayed audit badges. This saved research and its human product approval were transferred privately to the cloud, retaining original capture dates; the cloud agent generated a fresh inquiry and paused for message approval. No supplier was contacted.
+
+The deployed image `a0967ed` passed public health, owner/viewer access boundaries, the owner-only live VNC WebSocket, and real cloud inference. A fresh cloud run for water bottle covers collected three Amazon products and reached native product review. It disclosed missing reviews, Google Ads sign-in and a Trends rate limit. The labeled synthetic walkthrough also passed; it is separate from real evidence. Configured email delivery remains untested.
 
 ## Supporting files
 
@@ -83,4 +87,4 @@ The earlier DeepAgents live run on 16 October 2026 completed with all three sour
 - `package_release.py` copies allowlisted source files into `.release/`; it is a publishing utility, not part of the agent loop.
 - `tests/` contains development checks and is excluded from the production image.
 
-Local model selection defaults to `gpt-6-luna`; `MARKETRADAR_CODEX_MODEL` can override it. Cloud inference uses `AF_API_KEY`, `AF_ORG_ID` and optional `MARKETRADAR_CLOUD_MODEL`; an authenticated inference request has succeeded. Local Codex sign-in is never copied to the cloud. Cloud Google sign-in still requires a working cloud browser and manual login.
+Local model selection defaults to `gpt-6-luna`; `MARKETRADAR_CODEX_MODEL` can override it. Cloud inference uses `AF_API_KEY`, `AF_ORG_ID` and optional `MARKETRADAR_CLOUD_MODEL`; authenticated inference has succeeded inside the deployment. Local Codex sign-in is never copied to the cloud. Sign in to Google Ads manually through the owner's cloud browser before new Keyword Planner collection.
