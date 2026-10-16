@@ -52,6 +52,8 @@ def suggest_marketplace_opportunities(brief, evidence, analysis, model, *, stop=
               "evidence, using the marketplace in the brief. Do not assert unobserved product features, rankings, sales, "
               "profit, search volume or conversion uplift. Trends is relative interest, and Planner competition is "
               "advertiser competition. Preserve uncertainty, effective filter limitations and source disagreements. "
+              "Prioritize testing the supplied Amazon market-gap hypotheses and buyer-requested improvements; "
+              "do not turn a sampled complaint into a claim about every buyer or a verified market-wide gap. "
               "Do not force recommendations when evidence is insufficient. Each task must cite actual successful "
               "evidence IDs. Return JSON only.")
     prompt = ('Return {"recommendations":[{"id":"action-1","title":"...","reason":"...",'

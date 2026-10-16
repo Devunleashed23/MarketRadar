@@ -11,9 +11,7 @@ import uuid
 from .fastn import FastnClient
 from .settings import Settings
 
-MARKET_DOMAINS = ('amazon.com', 'amazon.co.uk', 'amazon.in', 'amazon.de', 'amazon.ca',
-                  'amazon.com.au', 'amazon.fr', 'amazon.it', 'amazon.es', 'ebay.com',
-                  'ebay.co.uk', 'ebay.de', 'etsy.com')
+MARKET_DOMAINS = ('amazon.com',)
 FINAL_STATES = ('completed', 'failed', 'cancelled', 'interrupted')
 
 
@@ -28,8 +26,8 @@ def validate_brief(raw):
     if not 2 <= len(keyword) <= 160:
         raise ValueError('Enter a product keyword between 2 and 160 characters.')
     marketplace = raw.get('marketplace', 'amazon')
-    if marketplace not in ('amazon', 'ebay', 'etsy'):
-        raise ValueError('Choose Amazon, eBay or Etsy.')
+    if marketplace != 'amazon':
+        raise ValueError('This workflow researches Amazon.com products.')
     country = str(raw.get('country', 'US')).upper()
     if not re.fullmatch('[A-Z]{2}', country):
         raise ValueError('Country must be a two-letter code such as US or PK.')
@@ -46,7 +44,11 @@ def validate_brief(raw):
         host = (parsed.hostname or '').lower()
         if parsed.scheme != 'https' or parsed.username or parsed.password or not any(
                 host == domain or host.endswith('.' + domain) for domain in MARKET_DOMAINS):
-            raise ValueError('Use an HTTPS Amazon, eBay or Etsy product URL.')
+            raise ValueError('Use an HTTPS Amazon.com product URL.')
+        from .browser import safe_marketplace_url
+        checked = safe_marketplace_url(url)
+        if not re.search(r'/(?:dp|gp/product)/[A-Z0-9]{10}(?:/|$)', urlsplit(checked).path):
+            raise ValueError('Use an Amazon.com product link containing a ten-character ASIN.')
     language = str(raw.get('language', 'English')).strip()
     if not 1 <= len(language) <= 60:
         raise ValueError('Enter a valid language.')
@@ -72,6 +74,8 @@ def validate_report(value, evidence):
         if not isinstance(items, list) or not all(isinstance(i, str) for i in items):
             raise ValueError(f'Report {key} must be a list of text observations.')
         output[key] = [i[:2500] for i in items[:20]]
+    from subagents.amazon_market_agent_v2 import validate_findings
+    output.update(validate_findings(value, evidence))
     recs = value.get('recommendations', [])
     if not isinstance(recs, list) or len(recs) > 3:
         raise ValueError('The report must contain at most three recommendations.')
@@ -98,6 +102,15 @@ def sample_evidence(brief):
     settings = {k: brief[k] for k in ('country', 'language', 'date_range')}
     common = {'status': 'sample', 'captured_at': now(), 'settings': settings,
               'raw_excerpt': 'Synthetic demonstration data. Not collected from Google or a marketplace.'}
+    product = {'asin': 'SAMPLE0001', 'title': 'Example travel mug (synthetic)', 'url': 'https://www.amazon.com/',
+               'price': '24.99 (synthetic)', 'currency': 'USD', 'rating': '4.2 (synthetic)',
+               'review_count': '120 (synthetic)', 'demand_signal': None,
+               'features': ['Insulated body and removable lid (synthetic)'],
+               'reviews': [{'id': 'sample-review-1', 'title': 'Synthetic review', 'rating': '2 (synthetic)',
+                            'body': 'Synthetic example: the lid leaked in my bag.', 'url': 'https://www.amazon.com/'},
+                           {'id': 'sample-review-2', 'title': 'Synthetic request', 'rating': '3 (synthetic)',
+                            'body': 'Synthetic example: I wish the lid were easier to take apart for cleaning.',
+                            'url': 'https://www.amazon.com/'}]}
     return [
         dict(common, id='sample-planner', source='keyword_planner', url='https://ads.google.com/aw/keywordplanner/home',
              data={'keywords': [{'keyword': brief['keyword'], 'volume': '1K–10K (synthetic)',
@@ -108,9 +121,7 @@ def sample_evidence(brief):
                               for m, v in enumerate([32, 37, 36, 48, 52, 58, 54, 65], 1)],
                    'notes': ['Synthetic normalized series; not actual search interest.']}),
         dict(common, id='sample-market', source='marketplace', url='https://www.amazon.com/',
-             data={'competitors': [{'title': 'Example travel mug (synthetic)', 'url': 'https://www.amazon.com/',
-                                    'price': '24.99 (synthetic)', 'currency': 'USD',
-                                    'notes': 'Example listing emphasizes capacity; not an observed competitor.'}],
+             data={'products': [product], 'competitors': [product], 'searches': [brief['keyword']],
                    'notes': ['Sample product positioning, not market evidence.']})]
 
 
@@ -233,6 +244,18 @@ class Radar:
                 report = validate_report({'summary': 'Sample walkthrough: these observations and metrics are synthetic.',
                     'observations': ['The sample shows the shape of a combined research brief.'],
                     'limitations': ['No browser collection, Codex turn, or fastn call was made.'],
+                    'products_in_demand': [{'title': 'Synthetic keyword demand candidate',
+                        'detail': 'Example Planner volume: 1K–10K (synthetic). This is not measured product sales.',
+                        'evidence_ids': ['sample-planner'], 'review_ids': []}],
+                    'complaints': [{'title': 'Synthetic example: a leaking lid',
+                        'detail': 'One synthetic buyer reports that the lid leaked in a bag.',
+                        'evidence_ids': ['sample-market'], 'review_ids': ['sample-review-1']}],
+                    'requested_features': [{'title': 'Synthetic example: easier lid cleaning',
+                        'detail': 'One synthetic buyer explicitly requests a lid that comes apart more easily.',
+                        'evidence_ids': ['sample-market'], 'review_ids': ['sample-review-2']}],
+                    'market_gaps': [{'title': 'Synthetic example: test a better lid',
+                        'detail': 'Hypothesis: a leak-resistant lid with easier cleaning could address these example complaints.',
+                        'evidence_ids': ['sample-market'], 'review_ids': ['sample-review-1', 'sample-review-2']}],
                     'recommendations': [{'id': 'sample-next', 'title': 'Run a live comparison after connecting your tools',
                                          'reason': 'Synthetic data cannot justify a seller decision.',
                                          'evidence_ids': ['sample-planner', 'sample-trends']}]}, evidence)
@@ -274,9 +297,9 @@ class Radar:
             self._change(identity, evidence=evidence)
             successes = [e for e in evidence if e.get('status') in ('live', 'imported')]
             if not successes:
-                report = {'summary': 'Research needs account or browser attention before meaningful findings are available.',
+                report = validate_report({'summary': 'Research needs account or browser attention before meaningful findings are available.',
                           'observations': [], 'recommendations': [],
-                          'limitations': [f"{e['source']}: {e.get('status', 'unavailable')}" for e in evidence]}
+                          'limitations': [f"{e['source']}: {e.get('status', 'unavailable')}" for e in evidence]}, evidence)
             else:
                 self._change(identity, state='analyzing')
                 from subagents.amazon_market_agent_v2 import analyze_market_evidence

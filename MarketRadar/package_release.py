@@ -18,7 +18,7 @@ DEFAULT = ROOT / 'MarketRadar' / '.release'
 def source_files():
     files = [ROOT / 'models.py', ROOT / 'subagents' / 'amazon_market_agent_v2.py',
              ROOT / 'subagents' / 'listing_agent_v2.py', ROOT / 'subagents' / '__init__.py']
-    for directory, pattern in [('MarketRadar', '*.py'), ('MarketRadar/tests', '*.py'),
+    for directory, pattern in [('MarketRadar', '*.py'), ('MarketRadar', '*.js'), ('MarketRadar/tests', '*.py'),
                                ('MarketRadar/static', '*'), ('MarketRadar/integrations', '*.md'),
                                ('prompts/amazon_market_research', '*.md'), ('MarketRadar/deploy', '*')]:
         files.extend(path for path in (ROOT / directory).glob(pattern) if path.is_file())

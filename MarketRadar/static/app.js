@@ -347,7 +347,8 @@ function renderSources(evidence, run) {
     const status = record?.status || (isTerminal(run) ? 'not_collected' : 'pending');
     const card = node('article', undefined, 'source-card');
     const header = node('div', undefined, 'source-card-header');
-    header.append(node('h3', sourceNames[source]), node('span', readable(status), `status-pill ${sourceTone(status)}`));
+    const name = source === 'marketplace' && run.brief?.marketplace === 'amazon' ? 'Amazon.com' : sourceNames[source];
+    header.append(node('h3', name), node('span', readable(status), `status-pill ${sourceTone(status)}`));
     card.append(header);
     const notes = record?.data?.notes;
     const message = Array.isArray(notes) ? notes.join(' ') : notes || record?.message || record?.error || (record ? `${records.length} evidence record${records.length === 1 ? '' : 's'} · ${dateText(record.captured_at)}` : 'No source evidence recorded yet.');
@@ -363,7 +364,7 @@ function renderReport(run) {
   $('report-summary').textContent = typeof report.summary === 'string' ? report.summary : readable(report.summary);
   $('report-observations').replaceChildren();
   (report.observations || []).forEach((observation) => $('report-observations').append(node('li', typeof observation === 'string' ? observation : observation.text || observation.observation || JSON.stringify(observation))));
-  renderKeywords(evidence); renderTrends(evidence); renderCompetitors(evidence); renderRecommendations(report.recommendations || [], evidence); renderEvidence(evidence);
+  renderFindings(report, evidence); renderKeywords(evidence); renderTrends(evidence); renderCompetitors(evidence); renderRecommendations(report.recommendations || [], evidence); renderEvidence(evidence);
   const limitations = report.limitations || [];
   $('limitations').replaceChildren(); $('limitations').hidden = !limitations.length;
   if (limitations.length) {
@@ -457,21 +458,81 @@ function renderTrends(evidence) {
 }
 
 function renderCompetitors(evidence) {
-  const competitors = evidence.flatMap((record) => (record.data?.competitors || []).map((item) => ({ ...item, evidenceId: record.id, sourceUrl: record.url, evidenceStatus: record.status })));
+  const competitors = evidence.flatMap((record) => (record.data?.products || record.data?.competitors || []).map((item) => ({ ...item, evidenceId: record.id, sourceUrl: record.url, evidenceStatus: record.status })));
   $('competitor-cards').replaceChildren();
   if (!competitors.length) { $('competitor-cards').append(empty('No comparable listings were collected. Marketplace access may be unavailable.')); return; }
   competitors.slice(0, 3).forEach((item, index) => {
     const card = node('article', undefined, 'competitor-card'); card.append(node('span', `SAMPLE ${String(index + 1).padStart(2, '0')} · ${readable(item.evidenceStatus)}`, 'tiny-label'), node('h4', item.title || item.name || 'Observed listing'));
     if (item.price !== null && item.price !== undefined) card.append(node('span', `${item.currency || ''} ${readable(item.price)}`.trim(), 'price'));
-    const details = [item.rating !== undefined ? `Rating: ${item.rating}` : null, item.review_count !== undefined ? `Reviews: ${item.review_count}` : null, item.variant || item.condition].filter(Boolean);
+    const details = [item.rating != null ? `Rating: ${item.rating}` : null, item.review_count != null ? `Reviews: ${item.review_count}` : null, item.variant || item.condition].filter(Boolean);
     if (details.length) card.append(node('p', details.join(' · ')));
+    if (item.demand_signal) card.append(node('p', `Observed demand signal: ${item.demand_signal}`));
     if (item.notes || item.description || item.positioning) card.append(node('p', readable(item.notes || item.description || item.positioning)));
+    if (item.features?.length) {
+      const features = node('ul', undefined, 'observation-list');
+      item.features.slice(0, 3).forEach((feature) => features.append(node('li', feature)));
+      card.append(node('strong', 'Observed features'), features);
+    }
+    renderProductReviews(card, item.reviews || []);
     const link = externalLink(item.url || item.sourceUrl, 'View observed listing ↗'); if (link) card.append(link);
     $('competitor-cards').append(card);
   });
 }
 
 function evidenceAnchor(id) { return `evidence-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`; }
+
+function sourceLink(sourceId, evidence) {
+  const record = evidence.find((item) => item.id === sourceId);
+  if (!record) return null;
+  const link = node('a', `${sourceNames[sourceGroup(record.source)] || readable(record.source)} · ${sourceId} ↗`);
+  link.href = `#${evidenceAnchor(sourceId)}`;
+  link.addEventListener('click', (event) => { event.preventDefault(); document.querySelector('.evidence-details').open = true; $(evidenceAnchor(sourceId))?.scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+  return link;
+}
+
+function renderFindings(report, evidence) {
+  const sections = [
+    ['products_in_demand', 'Products with demand signals', 'No supported product or keyword demand signals were reported.'],
+    ['complaints', 'Buyer complaints', 'No review-backed buyer complaints were recorded in this section.'],
+    ['requested_features', 'Features buyers request', 'No review-backed feature requests were recorded in this section.'],
+    ['market_gaps', 'Potential market gaps', 'No market-gap hypothesis was recorded in this section.']
+  ];
+  const reviews = new Map(evidence.flatMap((record) => (record.data?.products || []).flatMap((product) => (product.reviews || []).map((review) => [review.id, review]))));
+  $('gap-findings').replaceChildren();
+  sections.forEach(([key, title, missing]) => {
+    const section = node('section', undefined, 'competitor-section');
+    const heading = node('div', undefined, 'section-heading compact'), label = node('h3', title);
+    label.id = `findings-${key}`; section.setAttribute('aria-labelledby', label.id); heading.append(label);
+    const cards = node('div', undefined, 'competitor-grid');
+    (report[key] || []).slice(0, 6).forEach((finding) => {
+      const card = node('article', undefined, 'competitor-card');
+      card.append(node('h4', finding.title), node('p', finding.detail));
+      const links = node('div', undefined, 'evidence-links');
+      (finding.evidence_ids || []).forEach((id) => { const link = sourceLink(id, evidence); if (link) links.append(link); });
+      (finding.review_ids || []).forEach((id) => { const review = reviews.get(id), link = review && externalLink(review.url, `Review ${id} ↗`); if (link) links.append(link); });
+      card.append(links); cards.append(card);
+    });
+    if (!cards.childElementCount) cards.append(empty(missing));
+    section.append(heading, cards); $('gap-findings').append(section);
+  });
+}
+
+function renderProductReviews(card, reviews) {
+  if (!reviews.length) { card.append(node('p', 'No buyer review excerpts were collected for this product.')); return; }
+  const details = node('details', undefined, 'extra-fields');
+  details.append(node('summary', `Read ${Math.min(3, reviews.length)} of ${reviews.length} sampled reviews`));
+  reviews.slice(0, 3).forEach((review) => {
+    const excerpt = node('article');
+    excerpt.append(node('h4', review.title || 'Sampled buyer review'));
+    const meta = [review.rating ? `Rating: ${review.rating}` : null, review.date, review.variant].filter(Boolean);
+    if (meta.length) excerpt.append(node('p', meta.join(' · ')));
+    const body = String(review.body || 'No review text recorded.');
+    excerpt.append(node('p', body.length > 600 ? `${body.slice(0, 600)}…` : body));
+    const link = externalLink(review.url, `Review ${review.id} ↗`); if (link) excerpt.append(link);
+    details.append(excerpt);
+  });
+  card.append(details);
+}
 
 function renderRecommendations(recommendations, evidence) {
   $('recommendations').replaceChildren();
@@ -484,10 +545,7 @@ function renderRecommendations(recommendations, evidence) {
     content.append(label, node('p', item.reason || item.interpretation || 'Inspect the source evidence before choosing this action.'));
     const links = node('div', undefined, 'evidence-links');
     (item.evidence_ids || []).forEach((sourceId) => {
-      const record = evidence.find((e) => e.id === sourceId);
-      if (!record) return;
-      const a = node('a', `${sourceNames[sourceGroup(record.source)] || readable(record.source)} ↗`); a.href = `#${evidenceAnchor(sourceId)}`;
-      a.addEventListener('click', (event) => { event.preventDefault(); document.querySelector('.evidence-details').open = true; $(evidenceAnchor(sourceId))?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }); links.append(a);
+      const link = sourceLink(sourceId, evidence); if (link) links.append(link);
     });
     content.append(links); row.append(checkbox, content); $('recommendations').append(row);
   });

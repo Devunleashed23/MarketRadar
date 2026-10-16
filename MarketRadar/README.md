@@ -1,6 +1,6 @@
 # MarketRadar
 
-A product research workspace combining **Playwright CLI**, the original Amazon research/listing agents, and a saved human review. Research covers Google Keyword Planner, Google Trends, and public Amazon, eBay or Etsy pages. **fastn MCP is optional.**
+A product research workspace combining **Playwright CLI**, the original Amazon research/listing agents, and a saved human review. Research covers Google Keyword Planner, Google Trends, and Amazon.com product features and buyer reviews. **fastn MCP is optional.**
 
 Local inference uses your signed-in Codex subscription. Cloud inference explicitly uses Alternate Clouds credentials and organization credits; your local Codex login is never copied into a deployment. The cloud service includes its own Chromium browser and an owner-only browser viewer for manual sign-in.
 
@@ -38,9 +38,11 @@ The fastn option is off by default. The current Agentika handbook requires Alter
 ## Research workflow
 
 ```text
-User chooses product, marketplace and research filters
+User chooses a product niche and Google research filters
     -> optional fastn MCP: load previous context
-    -> Playwright CLI: Keyword Planner, Trends, selected marketplace pages
+    -> Playwright CLI: Keyword Planner and Trends
+    -> one model call chooses an alternative Amazon search
+    -> fixed Amazon script: two searches, three products, up to twelve reviews each
     -> preserve ranges, source settings and collection evidence
     -> original amazon_market_agent_v2.py: grounded analysis
     -> original listing_agent_v2.py: up to three source-linked follow-ups
@@ -50,7 +52,11 @@ User chooses product, marketplace and research filters
     -> optional readback verifies the exact stored contents
 ```
 
-The browser loop uses observed page refs, bounded steps, and allowlisted research actions. Only one run owns the shared `marketradar` session at a time. Login, account setup, CAPTCHA, empty results and extraction failures have visible statuses. Source settings distinguish requested filters from verified filters. Unverified settings must be resolved before treating results as geographically comparable.
+Google collection uses observed page refs and bounded actions. Amazon navigation uses the checked-in `amazon_research.js` script: search, open product, read feature bullets and embedded reviews. The model chooses one optional alternative search once, then analyzes the collected text. It never generates Amazon navigation actions or scraping code. Obvious size/colour variants are skipped using their title prefix. Only one run owns the shared browser session at a time. Login, account setup, CAPTCHA, empty results and extraction failures have visible statuses.
+
+Every report has the same sections: **summary, key observations, products with demand signals, buyer complaints, requested features, potential market gaps, follow-ups, and limitations**. Findings cite source IDs; complaints and requests also cite actual review IDs. Gap ideas are hypotheses for human validation. The JSON export includes the original features and sampled reviews. Missing review access produces empty buyer-feedback sections, never invented reviews.
+
+Amazon.com is the fixed storefront. Google country/language/date choices do not change Amazon delivery settings or filter its reviews. Reviews may cover several variants and countries, and collection includes top reviews plus visible critical reviews; this is not a representative survey. Source settings distinguish requested filters from verified filters.
 
 Trends is relative search interest, not sales. Planner volume ranges stay ranges; advertiser competition is not marketplace seller competition. Marketplace listings are a small observed sample. Recommendations cite source IDs; model interpretation is not an independently verified market fact. Never use a synthetic sample or source failure as evidence of demand.
 
@@ -65,7 +71,7 @@ The app shows a successful write as **unverified** until the optional verify too
 ## Files and configuration
 
 - `models.py`: local subscription adapter; `cloud_model.py`: Alternate Clouds inference adapter. The **parent** `models.py` selects one explicitly and retains the separate legacy Google factory.
-- `browser.py`: Playwright CLI collector and source validation.
+- `browser.py`: collection orchestration and one Amazon search-planning model call; `amazon_research.js`: fixed Playwright search/product extraction, with no model calls.
 - `fastn.py`: real MCP discovery, calls, argument templates, credential redaction and readback checks.
 - `core.py`: run state, calls to the two original agents, report validation, human review and persistence.
 - `server.py`, `cloud_config.py`, `static/`: local or authenticated cloud API and responsive interface.

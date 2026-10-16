@@ -124,8 +124,9 @@ class BrowserTests(unittest.TestCase):
         for marker in ["Too Many Requests", "Error429", "Error 429", "HTTP 429"]:
             with self.subTest(marker=marker), tempfile.TemporaryDirectory() as root:
                 collector = FakeBrowser(root, {"google_trends": f'- heading "{marker}"'})
-                result = collector.collect(BRIEF, NoModel())
-                self.assertEqual(result[1]["status"], "rate_limited")
+                result = collector._collect_source('google_trends', BRIEF,
+                    collector.source_url('google_trends', BRIEF), NoModel(), None)
+                self.assertEqual(result["status"], "rate_limited")
 
     def test_marketplace_price_cannot_be_borrowed_from_another_listing(self):
         snapshot = ('- listitem:\n  - heading "Travel Mug"\n  - link "Travel Mug":\n'
@@ -167,7 +168,7 @@ class BrowserTests(unittest.TestCase):
             with self.subTest(action=action), self.assertRaises(BrowserError):
                 collector._action_args(action, "marketplace", '- textbox "Search" [ref=e1]', BRIEF, None)
 
-    def test_multiple_marketplace_pages_share_one_model_call_budget(self):
+    def test_amazon_navigation_uses_one_planning_call_and_fixed_script(self):
         class CountingModel(FakeModel):
             calls = 0
 
@@ -175,14 +176,33 @@ class BrowserTests(unittest.TestCase):
                 self.calls += 1
                 return self.response
 
-        brief = dict(BRIEF, max_browser_steps=6, product_url="https://www.amazon.com/dp/B123",
-                     competitor_urls=["https://www.ebay.com/itm/123", "https://www.etsy.com/listing/123"])
-        snapshots = {source: '- heading "Research"' for source in ("keyword_planner", "google_trends", "marketplace")}
-        model = CountingModel({"action": "snapshot"})
+        class ScriptBrowser(FakeBrowser):
+            def _collect_source(self, source, *args, **kwargs):
+                return {'id': source, 'source': source, 'status': 'no_results', 'data': {}}
+
+            def _amazon_page(self, config, stop=None):
+                self.commands.append(config)
+                if config['action'] == 'search':
+                    return {'status': 'live', 'notes': [], 'products': [
+                        {'asin': 'B000000001', 'title': 'Alpha insulated travel cup black'},
+                        {'asin': 'B000000002', 'title': 'Alpha insulated travel cup white'},
+                        {'asin': 'B000000003', 'title': 'Beta vacuum travel mug'},
+                        {'asin': 'B000000004', 'title': 'Gamma coffee flask cup'}]}
+                return {'status': 'live', 'notes': [], 'products': [
+                    {'asin': config['asin'], 'title': 'Observed product', 'features': ['Steel body'],
+                     'reviews': [{'id': config['asin'] + '-review', 'body': 'Lid leaked.'}]}]}
+
+        model = CountingModel({'searches': ['leakproof flask']})
         with tempfile.TemporaryDirectory() as root:
-            result = FakeBrowser(root, snapshots).collect(brief, model)
-        self.assertEqual(len(result), 5)
-        self.assertEqual(model.calls, 18)
+            browser = ScriptBrowser(root, {})
+            result = browser.collect(BRIEF, model)
+        self.assertEqual(len(result), 3)
+        self.assertEqual(model.calls, 1)
+        actions = [command for command in browser.commands if isinstance(command, dict)]
+        self.assertEqual([action['action'] for action in actions], ['search', 'search', 'product', 'product', 'product'])
+        self.assertEqual([action['asin'] for action in actions[2:]], ['B000000001', 'B000000003', 'B000000004'])
+        self.assertEqual(result[-1]['status'], 'live')
+        self.assertEqual(len(result[-1]['data']['products']), 3)
 
     def test_requested_settings_are_not_claimed_verified_for_planner(self):
         with tempfile.TemporaryDirectory() as root:
