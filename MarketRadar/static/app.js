@@ -1,0 +1,643 @@
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const app = { status: null, run: null, runId: null, poll: null, selected: new Set(), tools: [], loading: false, reviewHydrated: null };
+const terminalStates = new Set(['completed', 'complete', 'done', 'succeeded', 'failed', 'error', 'cancelled', 'canceled', 'ready', 'awaiting_approval', 'partial', 'needs_attention', 'interrupted']);
+const sourceNames = { keyword_planner: 'Keyword Planner', planner: 'Keyword Planner', google_ads: 'Keyword Planner', trends: 'Google Trends', google_trends: 'Google Trends', marketplace: 'Marketplace' };
+
+function node(tag, text, className) {
+  const el = document.createElement(tag);
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  if (className) el.className = className;
+  return el;
+}
+
+function readable(value) {
+  if (value === null || value === undefined || value === '') return 'Not provided';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value).replace(/_/g, ' ');
+}
+
+function safeUrl(value) {
+  try {
+    const url = new URL(String(value));
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+  } catch { return null; }
+}
+
+function externalLink(value, label) {
+  const href = safeUrl(value);
+  if (!href) return null;
+  const a = node('a', label || 'Open source ↗');
+  a.href = href;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  return a;
+}
+
+function empty(message, heading) {
+  const el = node('div', undefined, 'empty-state');
+  if (heading) el.append(node('strong', heading));
+  el.append(node('span', message));
+  return el;
+}
+
+function dateText(value, timeOnly = false) {
+  if (!value) return 'Time unavailable';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return timeOnly ? date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers }, cache: 'no-store' });
+  const text = await response.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { throw new Error(`The server returned an unreadable response (${response.status}).`); }
+  if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : typeof data.detail === 'string' ? data.detail : `Request failed (${response.status}).`);
+  return data;
+}
+
+function post(path, body = {}) { return api(path, { method: 'POST', body: JSON.stringify(body) }); }
+
+function notice(message, error = false) {
+  $('notice').textContent = message;
+  $('notice').className = `notice${error ? ' error' : ''}`;
+  $('notice').setAttribute('role', error ? 'alert' : 'status');
+  $('notice').hidden = false;
+}
+
+async function buttonAction(button, action, pending = 'Working…') {
+  const text = button.textContent;
+  button.disabled = true;
+  button.textContent = pending;
+  try { return await action(); }
+  catch (error) { notice(error.message, true); return null; }
+  finally { button.disabled = false; button.textContent = text; }
+}
+
+function navigate(view, focus = false) {
+  const valid = ['research', 'connections', 'history'].includes(view) ? view : 'research';
+  document.querySelectorAll('.view').forEach((el) => { el.hidden = el.id !== `view-${valid}`; });
+  document.querySelectorAll('.nav-link').forEach((el) => {
+    const active = el.dataset.view === valid;
+    el.classList.toggle('active', active);
+    if (active) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+  });
+  $('view-name').textContent = valid.charAt(0).toUpperCase() + valid.slice(1);
+  if (location.hash !== `#${valid}`) history.replaceState(null, '', `#${valid}`);
+  if (valid === 'history') loadHistory();
+  if (focus) $('main').focus({ preventScroll: true });
+}
+
+function badge(id, text, tone = '') {
+  $(id).textContent = text;
+  $(id).className = `status-pill ${tone}`.trim();
+}
+
+function browserReady(browser = {}) {
+  return Boolean(browser.attached || browser.connected || ['ready', 'attached', 'connected'].includes(browser.status));
+}
+
+function renderStatus(status) {
+  app.status = status;
+  const codex = status.codex || {}, browser = status.browser || {}, fastn = status.fastn || {};
+  const codexReady = Boolean(codex.available !== false && (codex.ready ?? codex.logged_in));
+  const cloudProvider = /alternate/i.test(codex.provider || codex.display_name || '');
+  const providerName = codex.display_name || (cloudProvider ? 'Alternate Clouds' : 'Codex');
+  const attached = browserReady(browser);
+  badge('codex-badge', codexReady ? 'Connected' : codex.available ? 'Login needed' : 'Unavailable', codexReady ? 'good' : 'warn');
+  if (cloudProvider) badge('codex-badge', codexReady ? 'Configured · verify access' : 'Setup needed', codexReady ? 'good' : 'warn');
+  $('provider-title').textContent = providerName;
+  $('provider-description').textContent = cloudProvider ? 'Research uses the workspace’s Alternate Clouds inference connection. Configuration alone does not confirm a successful model request.' : 'Research uses your locally connected Codex session. No additional model API key is entered here.';
+  badge('browser-badge', attached ? 'Attached' : 'Not attached', attached ? 'good' : 'warn');
+  badge('fastn-badge', fastn.configured ? 'Configured · test to verify' : 'Not configured', fastn.configured ? 'good' : 'warn');
+  $('global-status').textContent = codexReady && attached ? 'Ready to research' : codexReady ? 'Attach research browser' : 'Connect reasoning session';
+  $('global-status').classList.toggle('ready', codexReady && attached);
+  $('connection-dot').classList.toggle('ready', codexReady && attached);
+  $('readiness-list').replaceChildren();
+  [[`${providerName} reasoning`, codexReady ? (cloudProvider ? 'Configured' : 'Connected') : 'Needs setup', codexReady], ['Research browser', attached ? 'Attached' : 'Attach to verify', attached], ['fastn · optional', fastn.configured ? 'Configured' : 'Not connected', Boolean(fastn.configured)]].forEach(([title, text, ready]) => {
+    const li = node('li'); li.append(node('span', title), node('span', text, `readiness-state${ready ? ' ready' : ''}`)); $('readiness-list').append(li);
+  });
+  $('codex-detail').replaceChildren();
+  [['Model', codex.model || 'Not reported'], ['Session', cloudProvider ? (codex.authenticated ? 'Authenticated request confirmed' : 'Connection not yet authenticated by a request') : codexReady ? 'Signed in locally' : codex.message || codex.error || 'Check local Codex login']].forEach(([key, value]) => {
+    $('codex-detail').append(node('dt', key), node('dd', value));
+  });
+  const browserMessage = browser.message || browser.error || browser.detail;
+  if (browserMessage) { $('browser-detail').textContent = typeof browserMessage === 'string' ? browserMessage : JSON.stringify(browserMessage, null, 2); $('browser-detail').hidden = false; }
+  $('fastn-run-hint').textContent = fastn.configured ? 'Optionally load connected records through the configured read workflow.' : 'Research works without fastn. Connect it to add external records or save a copy.';
+  renderDeployment(status.deployment || {});
+  updateSaveState();
+}
+
+function renderDeployment(deployment) {
+  const demo = deployment.role === 'demo';
+  const liveMode = document.querySelector('[name="mode"][value="live"]');
+  liveMode.disabled = demo;
+  if (demo) document.querySelector('[name="mode"][value="sample"]').checked = true;
+  updateMode();
+  $('cancel-button').disabled = demo && app.run?.mode === 'live';
+  const viewer = deployment.browser_viewer;
+  $('cloud-browser-link').hidden = !viewer || demo;
+  if (viewer && !demo) {
+    try {
+      const url = new URL(viewer, location.origin);
+      if (url.origin === location.origin && url.pathname.startsWith('/browser/')) $('cloud-browser-link').href = url.href;
+      else $('cloud-browser-link').hidden = true;
+    } catch { $('cloud-browser-link').hidden = true; }
+  }
+  $('browser-owner-note').hidden = !demo;
+  $('browser-owner-note').textContent = 'Browser sign-in and connection settings are managed by the workspace owner. You can run research, review findings, and export results.';
+  document.querySelectorAll('#attach-browser, [data-open-source], #settings-form input, #settings-form textarea, #settings-form button, [form="settings-form"], #discover-tools, #test-fastn').forEach((el) => { el.disabled = demo; });
+}
+
+async function refreshStatus() {
+  try { renderStatus(await api('/api/status')); }
+  catch (error) { $('global-status').textContent = 'Server unavailable'; $('global-status').classList.remove('ready'); notice(error.message, true); }
+}
+
+function settingsValue(value, fallback) {
+  return typeof value === 'string' ? value : JSON.stringify(value ?? fallback, null, 2);
+}
+
+async function loadSettings() {
+  const response = await api('/api/settings');
+  const settings = response.settings || response;
+  $('gateway-url').value = settings.gateway_url || settings.url || '';
+  $('read-tool').value = settings.read_tool || '';
+  $('write-tool').value = settings.write_tool || '';
+  $('verify-tool').value = settings.verify_tool || '';
+  $('read-arguments').value = settingsValue(settings.read_arguments, { brief: '{brief}' });
+  $('write-arguments').value = settingsValue(settings.write_arguments, { payload: '{payload}' });
+  $('verify-arguments').value = settingsValue(settings.verify_arguments, { run_id: '{run_id}' });
+  $('key-status').textContent = settings.has_api_key ? 'Saved · leave blank to keep' : 'Not saved';
+  $('api-key').value = '';
+  $('clear-api-key').checked = false;
+}
+
+function parseArguments(id, label) {
+  let value;
+  try { value = JSON.parse($(id).value || '{}'); } catch { throw new Error(`${label} must contain valid JSON.`); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
+  return value;
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  await buttonAction($('save-settings'), async () => {
+    const settings = {
+      gateway_url: $('gateway-url').value.trim(), read_tool: $('read-tool').value.trim(), write_tool: $('write-tool').value.trim(), verify_tool: $('verify-tool').value.trim(),
+      read_arguments: parseArguments('read-arguments', 'Read arguments'), write_arguments: parseArguments('write-arguments', 'Store arguments'), verify_arguments: parseArguments('verify-arguments', 'Readback arguments')
+    };
+    if ($('clear-api-key').checked) settings.api_key = ''; else if ($('api-key').value) settings.api_key = $('api-key').value;
+    await post('/api/settings', settings);
+    await loadSettings(); await refreshStatus();
+    connectionResult('Connection settings saved locally. Discover tools and test the read workflow to verify access.');
+  }, 'Saving…');
+}
+
+function connectionResult(message, result, warn = false) {
+  const box = $('connection-result'); box.replaceChildren(node('div', message)); box.hidden = false; box.className = `connection-result${warn ? ' warn' : ''}`;
+  if (result !== undefined) box.append(node('pre', JSON.stringify(result, null, 2)));
+}
+
+async function discoverTools() {
+  await buttonAction($('discover-tools'), async () => {
+    const result = await post('/api/fastn/discover');
+    app.tools = result.tools || [];
+    $('tool-names').replaceChildren(); $('discovered-tools').replaceChildren();
+    connectionResult(app.tools.length ? `${app.tools.length} MCP tools discovered. Inspect their input schemas before configuring templates.` : 'The gateway returned no available tools.', undefined, !app.tools.length);
+    app.tools.forEach((tool) => {
+      const option = node('option'); option.value = tool.name; $('tool-names').append(option);
+      const article = node('article', undefined, 'tool-item'); article.append(node('h3', tool.name), node('p', tool.description || 'No description provided.'));
+      const details = node('details'); details.append(node('summary', 'Inspect input schema'), node('pre', JSON.stringify(tool.inputSchema || tool.input_schema || {}, null, 2))); article.append(details);
+      const buttons = node('div', undefined, 'tool-buttons');
+      [['Use for reading', 'read-tool'], ['Use for storing', 'write-tool'], ['Use for readback', 'verify-tool']].forEach(([text, id]) => { const button = node('button', text, 'text-button'); button.type = 'button'; button.addEventListener('click', () => { $(id).value = tool.name; $(id).focus(); notice('Tool selected. Match its arguments to the input schema, then save the connection.'); }); buttons.append(button); });
+      article.append(buttons); $('discovered-tools').append(article);
+    });
+  }, 'Discovering…');
+}
+
+async function testFastn() {
+  await buttonAction($('test-fastn'), async () => {
+    const result = await post('/api/fastn/test');
+    connectionResult('Read workflow returned a response. Inspect it below; this test does not write records.', result);
+    await refreshStatus();
+  }, 'Testing read…');
+}
+
+function briefFromForm() {
+  const urls = $('competitor-urls').value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
+  if (urls.length > 3) throw new Error('Use at most three competitor URLs.');
+  if (urls.some((url) => !safeUrl(url))) throw new Error('Competitor links must be complete http or https URLs.');
+  return { keyword: $('keyword').value.trim(), marketplace: $('marketplace').value, country: $('country').value, language: $('language').value, date_range: $('date-range').value, product_url: $('product-url').value.trim(), competitor_urls: urls };
+}
+
+function updateMode() {
+  const sample = document.querySelector('[name="mode"]:checked').value === 'sample';
+  const demo = app.status?.deployment?.role === 'demo';
+  $('use-fastn').disabled = sample;
+  if (sample) { $('use-fastn').dataset.previous = String($('use-fastn').checked); $('use-fastn').checked = false; }
+  else if ($('use-fastn').dataset.previous) { $('use-fastn').checked = $('use-fastn').dataset.previous === 'true'; delete $('use-fastn').dataset.previous; }
+  $('mode-note').hidden = !sample;
+  $('mode-note').textContent = demo ? 'Owner sign-in runs live research; demo visitors can explore samples and review saved reports.' : 'Sample mode uses example evidence. It makes no external research, model, or fastn calls.';
+  $('run-button').replaceChildren(document.createTextNode(sample ? 'Explore sample research' : 'Research this market'), node('span', '↗'));
+}
+
+async function startRun(event) {
+  event.preventDefault();
+  if (app.loading) return;
+  try {
+    const brief = briefFromForm();
+    if (!brief.keyword) throw new Error('Enter a product or seed keyword.');
+    const mode = document.querySelector('[name="mode"]:checked').value;
+    if (app.status?.deployment?.role === 'demo' && mode !== 'sample') throw new Error('Owner sign-in is required to run live research.');
+    const useFastn = mode === 'live' && $('use-fastn').checked;
+    if (useFastn && !app.status?.fastn?.configured) { navigate('connections', true); throw new Error('Configure fastn to use optional enrichment, or leave its checkbox off to research without it.'); }
+    app.loading = true; $('run-button').disabled = true; $('notice').hidden = true;
+    const result = await post('/api/runs', { ...brief, mode, use_fastn: useFastn });
+    if (!result.id) throw new Error('The server did not return a research run ID.');
+    await openRun(result.id, true);
+  } catch (error) { notice(error.message, true); }
+  finally { app.loading = false; $('run-button').disabled = Boolean(app.run && !isTerminal(app.run)); }
+}
+
+function isTerminal(run) { return terminalStates.has(run.state); }
+
+async function openRun(id, scroll = false) {
+  clearTimeout(app.poll);
+  if (app.runId !== id) { app.selected.clear(); app.reviewHydrated = null; $('review-note').value = ''; $('review-result').hidden = true; $('save-result').hidden = true; }
+  app.runId = id; navigate('research');
+  $('run-section').hidden = false;
+  await pollRun(id);
+  if (scroll) $('run-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function pollRun(id) {
+  try {
+    const run = await api(`/api/runs/${encodeURIComponent(id)}`);
+    if (app.runId !== id) return;
+    app.run = run; renderRun(run);
+    if (!isTerminal(run)) app.poll = setTimeout(() => pollRun(id), 2000);
+  } catch (error) {
+    if (app.runId !== id) return;
+    $('progress-message').textContent = `Connection interrupted: ${error.message} Retrying…`;
+    app.poll = setTimeout(() => pollRun(id), 4000);
+  }
+}
+
+function sourceGroup(value) {
+  const source = String(value || '').toLowerCase();
+  if (/planner|google_ads|keyword/.test(source)) return 'keyword_planner';
+  if (/trend/.test(source)) return 'trends';
+  if (/market|amazon|ebay|etsy|competitor|review/.test(source)) return 'marketplace';
+  return source;
+}
+
+function sourceTone(value) {
+  if (['live', 'ok', 'success', 'collected', 'completed', 'verified', 'available'].includes(value)) return 'good';
+  if (['failed', 'error', 'extraction_failed'].includes(value)) return 'bad';
+  return 'warn';
+}
+
+function renderRun(run) {
+  const brief = run.brief || {}, evidence = run.evidence || [], events = run.events || [];
+  $('run-title').textContent = brief.keyword || 'Your research';
+  $('run-meta').textContent = [readable(brief.marketplace), brief.country, brief.language, brief.date_range, dateText(run.created_at)].filter(Boolean).join(' · ');
+  badge('run-state', readable(run.state), ['failed', 'error'].includes(run.state) ? 'bad' : isTerminal(run) ? 'good' : 'warn');
+  $('progress-message').textContent = run.error || events.at(-1)?.message || (isTerminal(run) ? 'Research run finished.' : 'Preparing research…');
+  $('cancel-button').hidden = isTerminal(run);
+  $('cancel-button').disabled = app.status?.deployment?.role === 'demo' && run.mode === 'live';
+  $('run-button').disabled = !isTerminal(run);
+  $('export-button').hidden = false; $('export-button').href = `/api/runs/${encodeURIComponent(run.id)}/export`;
+  const sample = run.mode === 'sample';
+  $('run-banner').hidden = !sample && !run.error;
+  $('run-banner').textContent = sample ? 'SAMPLE RESEARCH · These records are example data. No live source, model, or fastn connection was exercised.' : run.error ? `This run encountered an error: ${run.error}` : '';
+  renderStages(run); renderEvents(events); renderSources(evidence, run);
+  $('report-content').hidden = !run.report;
+  if (run.report) renderReport(run);
+}
+
+function renderStages(run) {
+  const state = String(run.state || 'queued');
+  const stages = [['Brief', /load|queue/], ['Collect', /collect|browser|planner|trend/], ['Analyze', /analy/], ['Recommend', /recommend|validat/], ['Review', /approval|ready|complete|done|succeed/]];
+  let index = stages.findIndex(([, pattern]) => pattern.test(state));
+  if (index < 0) {
+    const stage = run.events?.at(-1)?.stage || '';
+    index = stages.findIndex(([, pattern]) => pattern.test(stage));
+  }
+  $('stage-track').replaceChildren();
+  stages.forEach(([title], i) => $('stage-track').append(node('span', title, `stage-item${i < index ? ' complete' : i === index ? ' current' : ''}`)));
+}
+
+function renderEvents(events) {
+  $('event-count').textContent = `${events.length} events`;
+  $('event-list').replaceChildren();
+  events.forEach((event) => {
+    const li = node('li'); const time = node('time', dateText(event.time || event.timestamp, true));
+    li.append(time, node('span', event.message || readable(event.stage))); $('event-list').append(li);
+  });
+}
+
+function renderSources(evidence, run) {
+  $('source-cards').replaceChildren();
+  ['keyword_planner', 'trends', 'marketplace'].forEach((source) => {
+    const records = evidence.filter((record) => sourceGroup(record.source) === source);
+    const record = records.at(-1);
+    const status = record?.status || (isTerminal(run) ? 'not_collected' : 'pending');
+    const card = node('article', undefined, 'source-card');
+    const header = node('div', undefined, 'source-card-header');
+    header.append(node('h3', sourceNames[source]), node('span', readable(status), `status-pill ${sourceTone(status)}`));
+    card.append(header);
+    const notes = record?.data?.notes;
+    const message = Array.isArray(notes) ? notes.join(' ') : notes || record?.message || record?.error || (record ? `${records.length} evidence record${records.length === 1 ? '' : 's'} · ${dateText(record.captured_at)}` : 'No source evidence recorded yet.');
+    card.append(node('p', message));
+    const link = externalLink(record?.url); if (link) card.append(link);
+    $('source-cards').append(card);
+  });
+}
+
+function renderReport(run) {
+  const report = run.report || {}, evidence = run.evidence || [];
+  renderReview(run);
+  $('report-summary').textContent = typeof report.summary === 'string' ? report.summary : readable(report.summary);
+  $('report-observations').replaceChildren();
+  (report.observations || []).forEach((observation) => $('report-observations').append(node('li', typeof observation === 'string' ? observation : observation.text || observation.observation || JSON.stringify(observation))));
+  renderKeywords(evidence); renderTrends(evidence); renderCompetitors(evidence); renderRecommendations(report.recommendations || [], evidence); renderEvidence(evidence);
+  const limitations = report.limitations || [];
+  $('limitations').replaceChildren(); $('limitations').hidden = !limitations.length;
+  if (limitations.length) {
+    const list = node('ul'); limitations.forEach((item) => list.append(node('li', typeof item === 'string' ? item : JSON.stringify(item))));
+    $('limitations').append(node('strong', 'What this research cannot establish'), list);
+  }
+  renderSync(run.sync); updateSaveState();
+}
+
+function keywordsFrom(evidence) {
+  return evidence.flatMap((record) => (record.data?.keywords || []).map((keyword) => ({ ...(typeof keyword === 'string' ? { keyword } : keyword), evidenceSource: record.source, evidenceStatus: record.status })));
+}
+
+function volumeText(row) {
+  const value = row.avg_monthly_searches ?? row.average_monthly_searches ?? row.monthly_searches ?? row.search_volume ?? row.volume ?? row.volume_range;
+  if (value === null || value === undefined || value === '') return 'Unavailable';
+  if (typeof value === 'object') {
+    const min = value.min ?? value.low ?? value.lower, max = value.max ?? value.high ?? value.upper;
+    return min !== undefined && max !== undefined ? `${min}–${max}` : JSON.stringify(value);
+  }
+  return String(value);
+}
+
+function renderKeywords(evidence) {
+  const rows = keywordsFrom(evidence);
+  $('keyword-count').textContent = `${rows.length} RECORDED`;
+  $('keyword-table').replaceChildren();
+  if (!rows.length) { $('keyword-table').append(empty('No keyword rows were collected. See source status for access or extraction issues.')); return; }
+  const table = node('table'); const head = node('thead'); const tr = node('tr');
+  ['Keyword', 'Monthly estimate', 'Advertiser competition'].forEach((title) => tr.append(node('th', title))); head.append(tr); table.append(head);
+  const body = node('tbody');
+  rows.slice(0, 60).forEach((row) => {
+    const tr = node('tr'); const term = node('td', row.keyword || row.term || row.query || row.text || 'Unnamed keyword');
+    term.append(node('small', `${sourceNames[sourceGroup(row.evidenceSource)] || readable(row.evidenceSource)} · ${readable(row.evidenceStatus)}`));
+    tr.append(term, node('td', volumeText(row), 'numeric'), node('td', readable(row.advertiser_competition ?? row.competition)));
+    body.append(tr);
+  });
+  table.append(body); $('keyword-table').append(table);
+}
+
+function trendSeries(evidence) {
+  const series = new Map();
+  evidence.forEach((record) => (record.data?.trends || []).forEach((row) => {
+    if (Array.isArray(row.points) || Array.isArray(row.values)) {
+      const term = row.term || row.keyword || row.name || record.settings?.keyword || 'Search interest';
+      const points = (row.points || row.values).map((point, i) => typeof point === 'number' ? { date: String(i + 1), value: point } : { date: point.date || point.time || point.period || String(i + 1), value: point.value ?? point.interest ?? point.index });
+      series.set(`${record.id}:${term}`, { term, points, evidenceId: record.id });
+    } else if (row.term || row.keyword || row.query) {
+      const term = row.term || row.keyword || row.query; const key = `${record.id}:${term}`;
+      if (!series.has(key)) series.set(key, { term, points: [], evidenceId: record.id });
+      series.get(key).points.push({ date: row.date || row.time || row.period || '', value: row.value ?? row.interest ?? row.index });
+    } else {
+      const date = row.date || row.time || row.period;
+      Object.entries(row).filter(([key, value]) => !['date', 'time', 'period', 'isPartial', 'is_partial'].includes(key) && typeof value === 'number').forEach(([term, value]) => {
+        const key = `${record.id}:${term}`; if (!series.has(key)) series.set(key, { term, points: [], evidenceId: record.id });
+        series.get(key).points.push({ date, value });
+      });
+    }
+  }));
+  return [...series.values()].map((item) => ({ ...item, points: item.points.filter((p) => p.value !== null && p.value !== '' && Number.isFinite(Number(p.value)) && Number(p.value) >= 0 && Number(p.value) <= 100).map((p) => ({ ...p, value: Number(p.value) })) })).filter((item) => item.points.length);
+}
+
+function svgNode(tag, attributes, text) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  Object.entries(attributes || {}).forEach(([key, value]) => el.setAttribute(key, value));
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+function renderTrends(evidence) {
+  $('trend-chart').replaceChildren();
+  // Each evidence record contains one source comparison. Do not overlay separately normalized exports.
+  const comparison = evidence.find((record) => (record.data?.trends || []).length);
+  const series = trendSeries(comparison ? [comparison] : []).slice(0, 3);
+  if (!series.length) { $('trend-chart').append(empty('A chart appears only when actual source values are available.', 'No trend series recorded')); return; }
+  const colors = ['#214d3f', '#bb602f', '#75888b'];
+  const svg = svgNode('svg', { viewBox: '0 0 520 245', class: 'trend-svg', role: 'img', 'aria-label': 'Collected relative search interest, scaled from zero to one hundred' });
+  svg.append(svgNode('title', {}, 'Relative interest from collected Google Trends evidence'));
+  const left = 32, top = 18, width = 472, height = 180;
+  [0, 25, 50, 75, 100].forEach((value) => { const y = top + height * (1 - value / 100); svg.append(svgNode('line', { x1: left, x2: left + width, y1: y, y2: y, class: 'chart-grid' }), svgNode('text', { x: left - 8, y: y + 3, 'text-anchor': 'end', class: 'chart-label' }, String(value))); });
+  series.forEach((item, index) => {
+    const points = item.points.map((point, i) => `${left + (item.points.length === 1 ? width / 2 : i / (item.points.length - 1) * width)},${top + height * (1 - point.value / 100)}`).join(' ');
+    if (item.points.length > 1) svg.append(svgNode('polyline', { points, fill: 'none', stroke: colors[index], 'stroke-width': '2.5', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }));
+    else svg.append(svgNode('circle', { cx: left + width / 2, cy: top + height * (1 - item.points[0].value / 100), r: 4, fill: colors[index] }));
+  });
+  const first = series[0].points[0].date, last = series[0].points.at(-1).date;
+  svg.append(svgNode('text', { x: left, y: 224, class: 'chart-label' }, String(first).slice(0, 20)), svgNode('text', { x: left + width, y: 224, 'text-anchor': 'end', class: 'chart-label' }, String(last).slice(0, 20)));
+  const legend = node('div', undefined, 'chart-legend');
+  series.forEach((item, index) => { const entry = node('span'); const swatch = node('i'); swatch.style.backgroundColor = colors[index]; entry.append(swatch, document.createTextNode(item.term)); legend.append(entry); });
+  $('trend-chart').append(svg, legend);
+}
+
+function renderCompetitors(evidence) {
+  const competitors = evidence.flatMap((record) => (record.data?.competitors || []).map((item) => ({ ...item, evidenceId: record.id, sourceUrl: record.url, evidenceStatus: record.status })));
+  $('competitor-cards').replaceChildren();
+  if (!competitors.length) { $('competitor-cards').append(empty('No comparable listings were collected. Marketplace access may be unavailable.')); return; }
+  competitors.slice(0, 3).forEach((item, index) => {
+    const card = node('article', undefined, 'competitor-card'); card.append(node('span', `SAMPLE ${String(index + 1).padStart(2, '0')} · ${readable(item.evidenceStatus)}`, 'tiny-label'), node('h4', item.title || item.name || 'Observed listing'));
+    if (item.price !== null && item.price !== undefined) card.append(node('span', `${item.currency || ''} ${readable(item.price)}`.trim(), 'price'));
+    const details = [item.rating !== undefined ? `Rating: ${item.rating}` : null, item.review_count !== undefined ? `Reviews: ${item.review_count}` : null, item.variant || item.condition].filter(Boolean);
+    if (details.length) card.append(node('p', details.join(' · ')));
+    if (item.notes || item.description || item.positioning) card.append(node('p', readable(item.notes || item.description || item.positioning)));
+    const link = externalLink(item.url || item.sourceUrl, 'View observed listing ↗'); if (link) card.append(link);
+    $('competitor-cards').append(card);
+  });
+}
+
+function evidenceAnchor(id) { return `evidence-${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`; }
+
+function renderRecommendations(recommendations, evidence) {
+  $('recommendations').replaceChildren();
+  if (!recommendations.length) { $('recommendations').append(empty('The available evidence did not support a recommendation. Review the missing sources below.')); return; }
+  recommendations.slice(0, 3).forEach((item, index) => {
+    const id = String(item.id ?? `action-${index + 1}`); const row = node('div', undefined, 'recommendation');
+    const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.id = `action-${index}`; checkbox.value = id; checkbox.checked = app.selected.has(id);
+    checkbox.addEventListener('change', () => { if (checkbox.checked) app.selected.add(id); else app.selected.delete(id); updateSaveState(); });
+    const content = node('div'); const label = node('label', item.title || item.proposed_action || 'Suggested follow-up'); label.htmlFor = checkbox.id;
+    content.append(label, node('p', item.reason || item.interpretation || 'Inspect the source evidence before choosing this action.'));
+    const links = node('div', undefined, 'evidence-links');
+    (item.evidence_ids || []).forEach((sourceId) => {
+      const record = evidence.find((e) => e.id === sourceId);
+      if (!record) return;
+      const a = node('a', `${sourceNames[sourceGroup(record.source)] || readable(record.source)} ↗`); a.href = `#${evidenceAnchor(sourceId)}`;
+      a.addEventListener('click', (event) => { event.preventDefault(); document.querySelector('.evidence-details').open = true; $(evidenceAnchor(sourceId))?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }); links.append(a);
+    });
+    content.append(links); row.append(checkbox, content); $('recommendations').append(row);
+  });
+}
+
+function renderEvidence(evidence) {
+  $('evidence-count').textContent = `${evidence.length} source records`;
+  $('evidence-notebook').replaceChildren();
+  evidence.forEach((record) => {
+    const article = node('article', undefined, 'evidence-record'); article.id = evidenceAnchor(record.id);
+    article.append(node('h4', `${record.id} · ${sourceNames[sourceGroup(record.source)] || readable(record.source)}`));
+    const link = externalLink(record.url, record.url); if (link) article.append(link);
+    article.append(node('p', `${readable(record.status)} · captured ${dateText(record.captured_at)}`));
+    if (record.settings && Object.keys(record.settings).length) article.append(node('pre', JSON.stringify(record.settings, null, 2)));
+    if (record.raw_excerpt) article.append(node('pre', record.raw_excerpt));
+    const details = node('details'); details.append(node('summary', 'Inspect structured evidence'), node('pre', JSON.stringify(record.data || {}, null, 2))); article.append(details);
+    $('evidence-notebook').append(article);
+  });
+}
+
+function updateSaveState() {
+  const count = app.selected.size;
+  $('approval-count').textContent = count ? `${count} action${count === 1 ? '' : 's'} selected for approval` : 'No actions selected';
+  const approval = app.run?.approval;
+  const reviewMatches = Boolean(approval && approval.report_version === app.run?.report_version
+    && JSON.stringify([...app.selected].sort()) === JSON.stringify([...approval.approved_action_ids].sort())
+    && $('review-note').value.trim() === approval.note);
+  const completed = app.run?.state === 'completed';
+  $('approve-button').disabled = !completed || !app.run?.report || reviewMatches;
+  $('approve-button').textContent = reviewMatches ? 'Review recorded ✓' : app.run?.mode === 'sample' ? 'Record sample review' : count ? `Approve ${count} follow-up${count === 1 ? '' : 's'}` : 'Record review · no actions approved';
+  $('review-hint').textContent = reviewMatches ? 'Your decision is saved in History. No external action was executed.' : approval ? 'Your selection or note changed. Record a new review to keep your decision.' : 'Approve useful follow-ups, or record that none are ready. Your decision stays in History.';
+  $('save-button').replaceChildren(document.createTextNode('Copy reviewed report to fastn'), node('span', '↗'));
+  const sample = app.run?.mode === 'sample';
+  const configured = Boolean(app.status?.fastn?.configured);
+  const demoViewer = app.status?.deployment?.role === 'demo';
+  const unknown = app.run?.sync?.status === 'unknown';
+  const saved = ['verified', 'saved_unverified', 'saved'].includes(app.run?.sync?.status);
+  const saving = app.run?.sync?.status === 'saving';
+  $('save-button').disabled = !completed || !reviewMatches || sample || !configured || demoViewer || unknown || saved || saving;
+  document.querySelectorAll('#recommendations input').forEach((input) => { input.disabled = !completed; });
+  if (saved) $('save-button').textContent = 'External copy saved';
+  $('save-hint').textContent = sample ? 'Sample reviews stay in History and can be exported. No external copy is sent.' : demoViewer ? 'Your review stays in History. External copies are managed by the workspace owner.' : unknown ? 'The external save outcome is unknown. Inspect the destination before retrying.' : saved ? 'This external copy is fixed; newer local reviews are not sent automatically.' : !configured ? 'Your report and review stay in History. Connect fastn only if you want an external copy.' : !reviewMatches ? 'Record your review before sending an optional external copy.' : 'Send a copy of the report and recorded human decision. No task is executed.';
+}
+
+function renderReview(run) {
+  const review = run.approval;
+  if (!review) { $('review-result').hidden = true; return; }
+  const key = `${run.id}:${review.revision}`;
+  if (app.reviewHydrated !== key) {
+    app.selected = new Set(review.approved_action_ids || []);
+    $('review-note').value = review.note || '';
+    app.reviewHydrated = key;
+  }
+  const count = (review.approved_action_ids || []).length;
+  $('review-result').hidden = false;
+  $('review-result').className = `save-result${review.sample ? ' warn' : ''}`;
+  $('review-result').replaceChildren(node('div', `${review.sample ? 'SAMPLE REVIEW · ' : ''}${count} follow-up${count === 1 ? '' : 's'} approved · ${dateText(review.reviewed_at)} · revision ${review.revision}`));
+  if (review.note) $('review-result').append(node('p', review.note));
+  if (review.sample) $('review-result').append(node('p', 'This decision uses synthetic evidence and demonstrates the review workflow only.'));
+}
+
+async function approveRun() {
+  if (!app.run || $('approve-button').disabled) return;
+  await buttonAction($('approve-button'), async () => {
+    await post(`/api/runs/${encodeURIComponent(app.runId)}/approve`, {
+      approved_action_ids: [...app.selected], note: $('review-note').value.trim(), report_version: app.run.report_version
+    });
+    await pollRun(app.runId);
+  }, 'Recording your decision…');
+  updateSaveState();
+}
+
+function renderSync(sync) {
+  if (!sync || !sync.status || ['pending', 'not_saved', 'idle'].includes(sync.status)) return;
+  const messages = { verified: 'Saved through fastn and read back successfully.', saved_unverified: 'The save returned successfully. Persistence has not been verified by readback.', unknown: 'Save outcome unknown. The connection may have timed out after writing. Inspect the destination before retrying.', failed: 'The save failed. Inspect the error and destination before retrying.', saved: 'The save returned successfully. Check the destination; readback was not confirmed.' };
+  const box = $('save-result'); box.hidden = false; box.className = `save-result${sync.status === 'verified' ? '' : ' warn'}`; box.replaceChildren(node('div', messages[sync.status] || `Save status: ${readable(sync.status)}`));
+  if (sync.error) box.append(node('p', sync.error));
+  const refs = Array.isArray(sync.references) ? sync.references : sync.references ? [sync.references] : [];
+  refs.forEach((ref) => {
+    const url = typeof ref === 'string' ? ref : ref.url || ref.href;
+    const a = externalLink(url, typeof ref === 'object' ? ref.label || ref.name || 'Open saved record ↗' : 'Open saved record ↗');
+    if (a) box.append(a); else box.append(node('p', typeof ref === 'string' ? ref : JSON.stringify(ref)));
+  });
+  if (sync.result !== undefined) { const details = node('details'); details.append(node('summary', 'Inspect gateway result'), node('pre', JSON.stringify(sync.result, null, 2))); box.append(details); }
+}
+
+async function saveRun() {
+  if (!app.run || $('save-button').disabled) return;
+  await buttonAction($('save-button'), async () => {
+    try {
+      const result = await post(`/api/runs/${encodeURIComponent(app.runId)}/save`, { approved_action_ids: [...app.selected] });
+      if (result.sync) app.run.sync = result.sync;
+      else if (result.status) app.run.sync = result;
+      renderSync(app.run.sync);
+    } finally {
+      // A failed HTTP response may follow a completed write. Reload its recorded outcome before offering retry.
+      await pollRun(app.runId);
+    }
+  }, 'Saving through fastn…');
+  updateSaveState();
+}
+
+async function loadHistory() {
+  $('history-list').replaceChildren(empty('Loading saved research runs…'));
+  try {
+    const result = await api('/api/runs'); const runs = result.runs || [];
+    $('history-list').replaceChildren();
+    if (!runs.length) { $('history-list').append(empty('Start a focused research run. It will appear here with its evidence and source status.', 'Your notebook is ready')); return; }
+    runs.forEach((run) => {
+      const row = node('article', undefined, 'history-row'); const main = node('div', undefined, 'history-row-main');
+      main.append(node('h2', run.keyword || run.brief?.keyword || 'Research run'), node('p', `${dateText(run.created_at)} · ${run.mode === 'sample' ? 'Sample data' : 'Live mode'}${run.country ? ` · ${run.country}` : ''}`));
+      if (run.reviewed_at) main.append(node('p', `Human review recorded · ${run.approved_action_count || 0} follow-up${run.approved_action_count === 1 ? '' : 's'} approved`, 'review-recorded'));
+      const status = node('span', readable(run.state), `status-pill ${['failed', 'error'].includes(run.state) ? 'bad' : isTerminal(run) ? 'good' : 'warn'}`);
+      const button = node('button', 'Open research ↗', 'button secondary small'); button.type = 'button'; button.addEventListener('click', () => openRun(run.id, true).catch((error) => notice(error.message, true)));
+      row.append(main, status, button); $('history-list').append(row);
+    });
+  } catch (error) { $('history-list').replaceChildren(empty(error.message, 'History could not be loaded')); }
+}
+
+function bindEvents() {
+  document.querySelectorAll('[data-view]').forEach((link) => link.addEventListener('click', (event) => { event.preventDefault(); navigate(link.dataset.view, true); }));
+  document.querySelectorAll('[data-go]').forEach((button) => button.addEventListener('click', () => navigate(button.dataset.go, true)));
+  window.addEventListener('hashchange', () => { if (['research', 'connections', 'history'].includes(location.hash.slice(1))) navigate(location.hash.slice(1)); });
+  $('research-form').addEventListener('submit', startRun);
+  document.querySelectorAll('[name="mode"]').forEach((input) => input.addEventListener('change', updateMode));
+  $('use-fastn').addEventListener('change', updateMode);
+  $('settings-form').addEventListener('submit', saveSettings);
+  $('discover-tools').addEventListener('click', discoverTools);
+  $('test-fastn').addEventListener('click', testFastn);
+  $('refresh-status').addEventListener('click', () => buttonAction($('refresh-status'), refreshStatus, 'Checking…'));
+  $('refresh-history').addEventListener('click', loadHistory);
+  $('save-button').addEventListener('click', saveRun);
+  $('approve-button').addEventListener('click', approveRun);
+  $('review-note').addEventListener('input', updateSaveState);
+  $('cancel-button').addEventListener('click', () => {
+    if (app.status?.deployment?.role === 'demo' && app.run?.mode === 'live') return;
+    return buttonAction($('cancel-button'), async () => { await post(`/api/runs/${encodeURIComponent(app.runId)}/cancel`); await pollRun(app.runId); }, 'Cancelling…');
+  });
+  $('attach-browser').addEventListener('click', () => buttonAction($('attach-browser'), async () => { const result = await post('/api/browser/attach'); $('browser-detail').textContent = JSON.stringify(result, null, 2); $('browser-detail').hidden = false; await refreshStatus(); }, 'Attaching…'));
+  document.querySelectorAll('[data-open-source]').forEach((button) => button.addEventListener('click', () => buttonAction(button, async () => {
+    const result = await post('/api/browser/open', { source: button.dataset.openSource, brief: briefFromForm() });
+    $('browser-detail').textContent = JSON.stringify(result, null, 2); $('browser-detail').hidden = false;
+    notice('Browser request returned. Complete any login or account challenge manually in the browser.'); await refreshStatus();
+  }, 'Opening…')));
+}
+
+async function init() {
+  bindEvents(); updateMode(); navigate(location.hash.slice(1));
+  await refreshStatus();
+  if (app.status?.deployment?.role !== 'demo') await loadSettings().catch((error) => notice(error.message, true));
+}
+
+init();

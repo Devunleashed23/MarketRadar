@@ -1,0 +1,2 @@
+# The existing project .venv already has this version. No LLM API package/key required.
+mcp==1.29.0

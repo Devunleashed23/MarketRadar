@@ -1,0 +1,57 @@
+# Template: copy to .github/workflows/marketradar-container.yml to activate.
+# First successful run is required before calling the Linux image verified.
+name: MarketRadar container smoke
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+permissions:
+  contents: read
+  packages: write
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MARKETRADAR_OWNER_PASSWORD: ci-fixture-owner-password-12345
+      MARKETRADAR_DEMO_PASSWORD: ci-fixture-demo-password-67890
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build exact CLI/browser image
+        run: docker build -f MarketRadar/deploy/Dockerfile -t marketradar:smoke .
+      - name: Run non-root with browser sandbox and loopback desktop services
+        run: |
+          docker run --detach --name marketradar-ci --shm-size=1g \
+            --security-opt seccomp=MarketRadar/deploy/seccomp_profile.json \
+            -p 127.0.0.1:8080:8080 \
+            -e MARKETRADAR_PUBLIC_URL=https://ci.marketradar.example \
+            -e MARKETRADAR_OWNER_PASSWORD -e MARKETRADAR_DEMO_PASSWORD \
+            marketradar:smoke
+      - name: Verify health, roles, owner-only VNC, WebSocket upgrade, and sample
+        run: python3 MarketRadar/deploy/container_smoke.py
+      - name: Prove the pinned CLI controls the managed Chromium session
+        run: |
+          docker exec --workdir /data/browser marketradar-ci env -i \
+            HOME=/home/marketradar PATH=/usr/local/bin:/usr/bin:/bin DISPLAY=:99 \
+            PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+            node /app/node_modules/@playwright/cli/playwright-cli.js -s=marketradar tab-new about:blank
+          docker exec --workdir /data/browser marketradar-ci env -i \
+            HOME=/home/marketradar PATH=/usr/local/bin:/usr/bin:/bin DISPLAY=:99 \
+            PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+            node /app/node_modules/@playwright/cli/playwright-cli.js -s=marketradar snapshot
+      - name: Publish verified versioned image
+        if: github.event_name != 'pull_request'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          docker tag marketradar:smoke "$IMAGE"
+          docker push "$IMAGE"
+          printf '### Container image\n`%s`\n' "$IMAGE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Failure diagnostics
+        if: failure()
+        run: docker logs --tail 100 marketradar-ci
+      - name: Cleanup fixture container and anonymous volume
+        if: always()
+        run: docker rm -fv marketradar-ci || true

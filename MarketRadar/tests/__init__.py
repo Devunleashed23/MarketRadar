@@ -1,0 +1,1 @@
+"""MarketRadar regression tests."""
