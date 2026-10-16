@@ -239,6 +239,12 @@ class ResearchChatModel(BaseChatModel):
                     'items': {'type': 'object', 'additionalProperties': False, 'required': ['name', 'args', 'id'],
                               'properties': {'name': {'type': 'string'}, 'args': {'type': 'string'}, 'id': {'type': 'string'}}}}}}
         call_schema = schema['properties']['tool_calls']
+        if forced in ('approve_product', 'contact_supplier'):
+            # Approval screens need complete typed proposals, never an empty
+            # argument string that the human would have to reconstruct.
+            call_schema['items']['properties']['args'] = dict(functions[forced]['parameters'], additionalProperties=False)
+            system = system.replace('Encode each args value as a JSON OBJECT STRING, not a nested object.',
+                                    'Supply args as a structured JSON object matching the required schema.')
         call_schema['minItems'] = int(forced in ('required', 'any') or forced in functions)
         if functions:
             call_schema['items']['properties']['name']['enum'] = [forced] if forced in functions else list(functions)

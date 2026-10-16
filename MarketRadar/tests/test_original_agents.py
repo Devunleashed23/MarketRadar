@@ -178,6 +178,10 @@ class DeepAgentWorkflowTests(unittest.TestCase):
                 if self.turn == 2:
                     assert 'Delegation was not executed' in prompt and 'supplier-scout' in prompt
                 name, args = sequence[self.turn]
+                if name in ('approve_product', 'contact_supplier'):
+                    shape = kwargs['schema']['properties']['tool_calls']['items']['properties']['args']
+                    assert shape['type'] == 'object' and shape['additionalProperties'] is False
+                    assert set(shape['required']) == set(args)
                 self.turn += 1
                 if name is None:
                     return {'content': args, 'tool_calls': []}
