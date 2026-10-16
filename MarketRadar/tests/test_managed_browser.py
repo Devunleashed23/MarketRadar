@@ -12,6 +12,18 @@ from MarketRadar.browser import BrowserCollector
 
 
 class ManagedBrowserTests(unittest.TestCase):
+    def test_managed_launch_keeps_plain_cli_errors_without_account_urls(self):
+        with patch.dict(os.environ, {'MARKETRADAR_BROWSER_MODE': 'headed'}):
+            browser = BrowserCollector()
+        with patch('MarketRadar.browser.shutil.which', return_value='node'), patch.object(Path, 'is_file', return_value=True), \
+                patch('MarketRadar.browser.subprocess.Popen') as launch:
+            launch.return_value.returncode = 1
+            launch.return_value.communicate.return_value = ('Error: fixture namespace failure https://example.com/?token=hidden Bearer secret-value', None)
+            with self.assertRaisesRegex(RuntimeError, 'fixture namespace failure') as raised:
+                browser._cli(['open', 'about:blank'])
+            self.assertNotIn('secret-value', str(raised.exception))
+            self.assertNotIn('example.com', str(raised.exception))
+
     @unittest.skipUnless(shutil.which('node'), 'The Playwright CLI requires Node.js.')
     def test_supplier_script_runs_without_url_global_and_restricts_hosts(self):
         # Playwright CLI run-code uses a VM without the browser's URL global.

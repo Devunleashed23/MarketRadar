@@ -212,6 +212,12 @@ class BrowserCollector:
             if detail:
                 safe = re.sub(r'(?:https?|wss?)://\S+', '[url]', _redact(detail.group(1)))[:700]
                 raise BrowserError('Playwright CLI: ' + safe)
+            if self.mode != 'extension' and args[0] == 'open':
+                # Launch errors can be plain text rather than a ### Error block.
+                safe = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output[-3000:])
+                safe = re.sub(r'(?:https?|wss?)://\S+', '[url]', _redact(safe))
+                safe = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [redacted]', safe)
+                raise BrowserError(f'Managed browser launch exited {process.returncode}: ' + safe[-1800:])
             raise BrowserError("Playwright CLI could not complete this action. Check the visible browser tab.")
         return output[:2_000_000]
 
