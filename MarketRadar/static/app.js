@@ -475,6 +475,7 @@ function renderCompetitors(evidence) {
       card.append(node('strong', 'Observed features'), features);
     }
     renderProductReviews(card, item.reviews || []);
+    if (item.review_status === 'login_required') card.append(node('p', 'Amazon requires sign-in in the cloud browser to read customer reviews. Product features are available.'));
     const link = externalLink(item.url || item.sourceUrl, 'View observed listing ↗'); if (link) card.append(link);
     $('competitor-cards').append(card);
   });
@@ -597,8 +598,9 @@ function renderHumanLoop(run) {
   const demo = app.status?.deployment?.role === 'demo', suppliers = run.suppliers?.suppliers || [];
   $('human-loop').hidden = !native;
   const retrySuppliers = run.approved_product && run.suppliers && run.suppliers.status !== 'live' && !run.outreach;
-  $('human-review-start').hidden = (native && !retrySuppliers) || run.state !== 'completed' || run.mode !== 'live' || !run.report || demo;
-  $('human-review-start').textContent = retrySuppliers ? 'Retry supplier research' : 'Review this research with the agent';
+  const continueApproved = run.state === 'failed' && run.approved_product && !run.closed && !run.outreach;
+  $('human-review-start').hidden = (native && !retrySuppliers && !continueApproved) || (run.state !== 'completed' && !continueApproved) || run.mode !== 'live' || !run.report || demo;
+  $('human-review-start').textContent = continueApproved ? 'Continue approved workflow' : retrySuppliers ? 'Retry supplier research' : 'Review this research with the agent';
   document.querySelectorAll('#review-note, label[for="review-note"], .save-bar').forEach((el) => { el.hidden = native; });
   if (native) $('review-result').hidden = true;
   if (!native) return;

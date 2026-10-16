@@ -6,6 +6,26 @@ from MarketRadar.core import Radar, validate_brief, validate_report
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_failed_approved_workflow_can_continue_without_reapproval_or_resending(self):
+        with tempfile.TemporaryDirectory() as folder:
+            radar = Radar(folder)
+            run = radar._create(validate_brief({'keyword': 'mug'}), 'live', False)
+            approved = {'asin': 'B000000001', 'requirements': 'Easy to clean'}
+            radar._change(run['id'], state='failed', report={'summary': 'Saved report'},
+                          approved_product=approved, error='Inference timed out',
+                          review_history=[{'stage': 'approve_product', 'decision': 'approve'}])
+            with patch.object(radar, '_execute') as execute:
+                radar.begin_review(run['id'])
+                radar.wait(run['id'])
+                execute.assert_called_once_with(run['id'])
+            resumed = radar.get(run['id'])
+            self.assertEqual(resumed['approved_product'], approved)
+            self.assertIsNone(resumed['error'])
+            self.assertEqual(len(resumed['review_history']), 1)
+            radar._change(run['id'], state='failed', outreach={'status': 'unknown'})
+            with self.assertRaises(ValueError):
+                radar.begin_review(run['id'])
+
     def test_native_review_rejects_stale_or_invalid_approval_and_survives_restart(self):
         with tempfile.TemporaryDirectory() as folder:
             radar = Radar(folder)

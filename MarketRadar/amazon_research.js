@@ -34,10 +34,11 @@ async page => {
       });
     } else {
       // Scroll once to load the product's public customer-review section.
-      const reviewSection = page.locator('#customerReviews, #reviewsMedley').first();
+      const reviewSection = page.locator('#customerReviews, #reviewsMedley, #customer-reviews_feature_div').first();
       if (await reviewSection.count()) {
         await reviewSection.scrollIntoViewIfNeeded({ timeout: 5000 });
-        await page.locator('[data-hook="review"]').first().waitFor({ state: 'attached', timeout: 6000 }).catch(() => {});
+        await page.locator('[data-hook="review"], [data-csa-c-slot-id="cm-cr-dp-sign-in-prompt"]').first()
+          .waitFor({ state: 'attached', timeout: 6000 }).catch(() => {});
       }
       const product = await page.evaluate(asin => {
         const text = (root, selector, max = 1200) => root.querySelector(selector)?.innerText?.trim().slice(0, max) || null;
@@ -54,16 +55,20 @@ async page => {
         // Keep critical feedback as well as top reviews; this is a small, biased sample.
         const critical = reviews.filter(review => parseFloat(review.rating) <= 3).slice(0, 4);
         const sampled = [...critical, ...reviews.filter(review => !critical.some(item => item.id === review.id))].slice(0, 12);
+        const reviewText = text(document, '#customerReviews, #reviewsMedley, #customer-reviews_feature_div', 20000) || '';
         return { asin, url: `https://www.amazon.com/dp/${asin}`, title: text(document, '#productTitle', 400),
           price: text(document, '#corePrice_feature_div .a-price .a-offscreen, #corePriceDisplay_desktop_feature_div .a-price .a-offscreen', 80),
           rating: text(document, '#acrPopover .a-icon-alt', 80),
           review_count: text(document, '#acrCustomerReviewText', 80),
           demand_signal: text(document, '#social-proofing-faceout-title-tk_bought', 120),
           features: [...document.querySelectorAll('#feature-bullets li')].map(node => node.innerText.trim().slice(0, 700)).filter(Boolean).slice(0, 8),
-          reviews: sampled, visible_review_count: reviews.length };
+          reviews: sampled, visible_review_count: reviews.length,
+          review_status: reviews.length ? 'live' : /sign in to see customer reviews/i.test(reviewText) ? 'login_required' : 'unavailable' };
       }, config.asin);
       if (product.title) result.products = [product];
-      if (!product.reviews.length) result.notes.push(`${config.asin}: no readable customer reviews on the product page.`);
+      if (!product.reviews.length) result.notes.push(product.review_status === 'login_required'
+        ? `${config.asin}: Amazon says sign in to see customer reviews. Sign in manually in the cloud browser, then run new research; features remain available.`
+        : `${config.asin}: no readable customer reviews on the product page.`);
     }
     result.status = result.products.length ? 'live' : 'no_results';
   } catch (error) {

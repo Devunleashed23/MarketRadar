@@ -12,6 +12,31 @@ from MarketRadar.browser import BrowserCollector
 
 
 class ManagedBrowserTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'The Playwright CLI requires Node.js.')
+    def test_amazon_recognizes_current_review_section_and_signin_requirement(self):
+        harness = r'''
+const fs = require('fs'), vm = require('vm'); let scrolled = false;
+const section = {innerText: 'Customer reviews\nSign in to see customer reviews.'};
+const document = {querySelector: s => s === '#productTitle' ? {innerText:'Water bottle sleeve'} :
+  s.includes('customer-reviews_feature_div') ? section : null, querySelectorAll: () => []};
+const script = fs.readFileSync(process.argv[1], 'utf8').replace('/*MARKETRADAR_CONFIG*/ {}',
+  JSON.stringify({action:'product',asin:'B09PY5G4BW'}));
+const collect = vm.runInNewContext('(' + script + ')', {document});
+const page = {goto: async () => ({status:()=>200}), url:()=> 'https://www.amazon.com/dp/B09PY5G4BW',
+  evaluate:async (fn,arg)=>fn(arg), locator:s=>({first(){return this}, waitFor:async()=>{},
+    count:async()=>s.includes('customer-reviews_feature_div') ? 1 : 0,
+    scrollIntoViewIfNeeded:async()=>{scrolled=true}, innerText:async()=>section.innerText})};
+collect(page).then(result=>console.log(JSON.stringify({result,scrolled})));
+'''
+        script = Path(__file__).parents[1] / 'amazon_research.js'
+        completed = subprocess.run([shutil.which('node'), '-e', harness, str(script)],
+                                   capture_output=True, text=True, check=True, timeout=5)
+        observed = json.loads(completed.stdout)
+        self.assertTrue(observed['scrolled'])
+        self.assertEqual(observed['result']['products'][0]['review_status'], 'login_required')
+        self.assertEqual(observed['result']['products'][0]['reviews'], [])
+        self.assertIn('sign in', ' '.join(observed['result']['notes']).lower())
+
     def test_managed_launch_keeps_plain_cli_errors_without_account_urls(self):
         with patch.dict(os.environ, {'MARKETRADAR_BROWSER_MODE': 'headed'}):
             browser = BrowserCollector()

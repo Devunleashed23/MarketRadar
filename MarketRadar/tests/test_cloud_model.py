@@ -7,7 +7,7 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from MarketRadar.cloud_model import CloudModel
+from MarketRadar.cloud_model import CloudModel, _http_transport
 
 
 CREDS = {"AF_API_KEY": "af_test_private_credential", "AF_ORG_ID": "org_private_test"}
@@ -19,6 +19,12 @@ def response(content='{"ok":true}', finish_reason="stop", **message_fields):
 
 
 class CloudModelTests(unittest.TestCase):
+    def test_transport_allows_the_full_inference_timeout_before_headers(self):
+        with patch('MarketRadar.cloud_model.urllib.request.build_opener') as build:
+            build.return_value.open.return_value.__enter__.return_value.read1.return_value = b''
+            _http_transport(urllib.request.Request('https://example.test'), 90)
+        self.assertEqual(build.return_value.open.call_args.kwargs['timeout'], 90)
+
     def test_fixed_endpoint_json_protocol_usage_and_no_credentials_in_events(self):
         calls, events = [], []
         def transport(request, timeout):

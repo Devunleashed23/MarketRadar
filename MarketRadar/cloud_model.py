@@ -33,7 +33,8 @@ def _http_transport(request, timeout):
     """Injectable boundary: (urllib Request, timeout seconds) -> response bytes."""
     deadline = time.monotonic() + timeout
     opener = urllib.request.build_opener(_NoRedirect())
-    with opener.open(request, timeout=min(timeout, 20)) as response:
+    # Non-streaming inference may take longer than 20 seconds to send headers.
+    with opener.open(request, timeout=timeout) as response:
         chunks, length = [], 0
         while True:
             if time.monotonic() >= deadline:

@@ -322,14 +322,17 @@ class Radar:
             run = self.get(identity)
             retry_suppliers = bool(run.get('approved_product') and run.get('suppliers')
                 and run['suppliers'].get('status') != 'live' and not run.get('outreach'))
-            if (run['mode'] != 'live' or run['state'] != 'completed' or not run.get('report')
-                    or ((run.get('review_history') or run.get('closed')) and not retry_suppliers)):
-                raise ValueError('Choose a completed live report that has not entered agent review.')
+            continue_approved = bool(run['state'] == 'failed' and run.get('approved_product')
+                and not run.get('closed') and not run.get('outreach'))
+            if (run['mode'] != 'live' or not run.get('report')
+                    or (run['state'] != 'completed' and not continue_approved)
+                    or ((run.get('review_history') or run.get('closed')) and not (retry_suppliers or continue_approved))):
+                raise ValueError('Choose a completed live report or a failed approved workflow without an outreach attempt.')
             if any(thread.is_alive() for thread in self.threads.values()):
                 raise ValueError('Another research action is still running.')
-            self._change(identity, state='queued', closed=False,
+            self._change(identity, state='queued', closed=False, error=None,
                          **({'suppliers': None} if retry_suppliers else {}))
-            self._event(identity, 'human_review', 'Retrying supplier research with the existing human product approval.' if retry_suppliers
+            self._event(identity, 'human_review', 'Continuing the workflow with the existing human product approval.' if retry_suppliers or continue_approved
                         else 'Continuing the saved report with its original evidence capture dates; sources are not refreshed until you request a revision.')
             self.stops[identity] = threading.Event()
             thread = threading.Thread(target=self._execute, args=(identity,), daemon=True)
