@@ -13,7 +13,8 @@ async page => {
     }
     if (/\/ap\/signin/.test(page.url())) return { ...result, status: 'login_required', notes: ['Amazon asks for manual sign-in.'] };
     const body = await page.locator('body').innerText({ timeout: 10000 });
-    if (/enter the characters you see|sorry, we just need to make sure|robot check|verify you are human/i.test(body)) {
+    if (await page.locator('form[action*="validateCaptcha"]').count()
+        || /enter the characters you see|sorry, we just need to make sure|robot check|verify you are human/i.test(body)) {
       return { ...result, status: 'challenge', notes: ['Amazon verification stopped collection. Complete it manually before a new run.'] };
     }
     const selector = config.action === 'search' ? '[data-component-type="s-search-result"]' : '#productTitle';
