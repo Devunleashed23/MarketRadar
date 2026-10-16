@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const app = { status: null, run: null, runId: null, poll: null, selected: new Set(), tools: [], loading: false, reviewHydrated: null };
+const app = { status: null, run: null, runId: null, poll: null, selected: new Set(), tools: [], loading: false, reviewHydrated: null, humanHydrated: null, reviewing: false };
 const terminalStates = new Set(['completed', 'complete', 'done', 'succeeded', 'failed', 'error', 'cancelled', 'canceled', 'ready', 'awaiting_approval', 'partial', 'needs_attention', 'interrupted']);
 const sourceNames = { keyword_planner: 'Keyword Planner', planner: 'Keyword Planner', google_ads: 'Keyword Planner', trends: 'Google Trends', google_trends: 'Google Trends', marketplace: 'Marketplace' };
 
@@ -278,7 +278,7 @@ async function pollRun(id) {
     const run = await api(`/api/runs/${encodeURIComponent(id)}`);
     if (app.runId !== id) return;
     app.run = run; renderRun(run);
-    if (!isTerminal(run)) app.poll = setTimeout(() => pollRun(id), 2000);
+    if (!isTerminal(run) && run.state !== 'awaiting_review') app.poll = setTimeout(() => pollRun(id), 2000);
   } catch (error) {
     if (app.runId !== id) return;
     $('progress-message').textContent = `Connection interrupted: ${error.message} Retrying…`;
@@ -316,11 +316,12 @@ function renderRun(run) {
   renderStages(run); renderEvents(events); renderSources(evidence, run);
   $('report-content').hidden = !run.report;
   if (run.report) renderReport(run);
+  renderHumanLoop(run);
 }
 
 function renderStages(run) {
   const state = String(run.state || 'queued');
-  const stages = [['Brief', /load|queue/], ['Collect', /collect|browser|planner|trend/], ['Analyze', /analy/], ['Recommend', /recommend|validat/], ['Review', /approval|ready|complete|done|succeed/]];
+  const stages = [['Brief', /load|queue/], ['Collect', /collect|browser|planner|trend|suppli/], ['Analyze', /analy/], ['Recommend', /recommend|validat/], ['Review', /review|approval|ready|complete|done|succeed/]];
   let index = stages.findIndex(([, pattern]) => pattern.test(state));
   if (index < 0) {
     const stage = run.events?.at(-1)?.stage || '';
@@ -590,6 +591,87 @@ function updateSaveState() {
   $('save-hint').textContent = sample ? 'Sample reviews stay in History and can be exported. No external copy is sent.' : demoViewer ? 'Your review stays in History. External copies are managed by the workspace owner.' : unknown ? 'The external save outcome is unknown. Inspect the destination before retrying.' : saved ? 'This external copy is fixed; newer local reviews are not sent automatically.' : !configured ? 'Your report and review stay in History. Connect fastn only if you want an external copy.' : !reviewMatches ? 'Record your review before sending an optional external copy.' : 'Send a copy of the report and recorded human decision. No task is executed.';
 }
 
+function renderHumanLoop(run) {
+  const request = run.review_request, action = request?.action_requests?.[0], contact = action?.name === 'contact_supplier';
+  const waiting = run.state === 'awaiting_review' && Boolean(action), native = Boolean(request || run.approved_product || run.review_history?.length);
+  const demo = app.status?.deployment?.role === 'demo', suppliers = run.suppliers?.suppliers || [];
+  $('human-loop').hidden = !native;
+  $('human-review-start').hidden = native || run.state !== 'completed' || run.mode !== 'live' || !run.report || demo;
+  document.querySelectorAll('#review-note, label[for="review-note"], .save-bar').forEach((el) => { el.hidden = native; });
+  if (native) $('review-result').hidden = true;
+  if (!native) return;
+  $('human-loop-title').textContent = waiting ? contact ? 'Review the supplier message.' : 'Choose the next direction.' : 'Your decisions guide the agent.';
+  $('human-loop-status').textContent = waiting ? 'Waiting for you' : readable(run.state);
+  $('human-loop-description').textContent = waiting ? contact ? 'Inspect the supplier evidence and edit the message. Approval sends through configured email, or saves a draft for you to send manually.' : 'Approve a researched product to find suppliers, or send feedback to run the research again. The agent pauses here for your decision.' : run.approved_product ? `Approved product: ${run.approved_product.title || run.approved_product.asin}. ${run.approved_product.requirements || ''}` : 'Your review and feedback stay with this research run.';
+  $('human-product-fields').hidden = !waiting || contact;
+  $('human-message-fields').hidden = !waiting || !contact;
+  $('human-decision-fields').hidden = !waiting;
+  $('human-viewer-note').hidden = !demo;
+  const key = `${run.id}:${run.report_version}:${request?.id || ''}`;
+  if (waiting && app.humanHydrated !== key) {
+    const args = action.args || {}, products = (run.evidence || []).filter((r) => sourceGroup(r.source) === 'marketplace').flatMap((r) => r.data?.products || []);
+    $('human-product').replaceChildren();
+    products.filter((p) => p.asin).forEach((p) => { const option = node('option', p.title || p.asin); option.value = p.asin; $('human-product').append(option); });
+    if (args.product_id) $('human-product').value = args.product_id;
+    $('human-requirements').value = args.requirements || run.approved_product?.requirements || '';
+    $('human-keyword').value = ''; $('human-feedback').value = '';
+    $('human-subject').value = args.subject || ''; $('human-body').value = args.body || '';
+    const supplier = suppliers.find((s) => s.id === args.supplier_id) || {};
+    $('human-recipient').textContent = `Recipient: ${args.recipient || supplier.email || 'Contact through the supplier website'}${supplier.name ? ` · ${supplier.name}` : ''}`;
+    $('human-contact-source').replaceChildren();
+    const link = externalLink(args.contact_url || supplier.contact_url, 'Inspect supplier contact source ↗'); if (link) $('human-contact-source').append(link);
+    app.humanHydrated = key;
+  }
+  $('human-approve').textContent = contact ? 'Approve message' : 'Approve product & find suppliers';
+  $('human-revise').textContent = contact ? 'Send feedback & revise message' : 'Send feedback & research again';
+  document.querySelectorAll('#human-decision-fields button, #human-decision-fields textarea, #human-product-fields input, #human-product-fields textarea, #human-product-fields select, #human-message-fields input, #human-message-fields textarea').forEach((el) => { el.disabled = demo || app.reviewing; });
+  $('human-approve').disabled ||= !contact && !$('human-product').value;
+  $('supplier-results').replaceChildren();
+  if (run.suppliers) {
+    $('supplier-results').append(node('h4', 'Supplier research'), node('p', readable(run.suppliers.notes || 'Review source evidence before choosing a supplier.')));
+    const list = node('div', undefined, 'competitor-grid');
+    suppliers.forEach((supplier) => {
+      const card = node('article', undefined, 'competitor-card');
+      card.append(node('h4', supplier.name), node('p', supplier.product || ''), node('p', `Verification evidence: ${readable(supplier.verification)}`));
+      if (supplier.notes) card.append(node('p', readable(supplier.notes)));
+      const links = node('div', undefined, 'evidence-links');
+      [[supplier.url, 'Supplier page ↗'], [supplier.verification_url, 'Verification source ↗'], [supplier.contact_url, 'Contact source ↗']].forEach(([url, label]) => { const link = externalLink(url, label); if (link) links.append(link); });
+      card.append(links); list.append(card);
+    });
+    if (!suppliers.length) list.append(empty('No supported supplier candidates were found.'));
+    $('supplier-results').append(list);
+  }
+  $('outreach-result').replaceChildren();
+  if (run.outreach) {
+    const outreach = run.outreach, messages = { approved_draft: 'Message approved · send it manually below.', sent: 'Message sent after your approval.', unknown: 'Delivery outcome unknown. Check your sent mail before sending again.', rejected: 'Supplier contact was not approved.' };
+    $('outreach-result').append(node('h4', messages[outreach.status] || readable(outreach.status)), node('p', `Recipient: ${outreach.recipient || 'Supplier contact page'}`), node('strong', outreach.subject || ''), node('p', outreach.body || '', 'message-preview'));
+    if (outreach.status === 'approved_draft') {
+      if (typeof outreach.mailto === 'string' && /^mailto:[^\r\n]+$/i.test(outreach.mailto)) { const link = node('a', 'Open approved draft in your email app ↗', 'button secondary small'); link.href = outreach.mailto; $('outreach-result').append(link); }
+      const link = externalLink(outreach.contact_url, 'Open supplier contact page ↗'); if (link) $('outreach-result').append(link);
+    }
+  }
+  $('human-review-history').replaceChildren();
+  if (run.review_history?.length) {
+    $('human-review-history').append(node('h4', 'Human decisions'));
+    const list = node('ol', undefined, 'observation-list');
+    run.review_history.forEach((review) => list.append(node('li', `${dateText(review.at)} · ${readable(review.stage)} · ${readable(review.decision)}${review.feedback ? ` — ${review.feedback}` : ''}`)));
+    $('human-review-history').append(list);
+  }
+}
+
+async function reviewAgent(decision) {
+  if (app.reviewing || app.status?.deployment?.role === 'demo' || app.run?.state !== 'awaiting_review') return;
+  const feedback = $('human-feedback').value.trim();
+  if (decision === 'revise' && !feedback) { notice('Add feedback to explain how the agent should revise its work.', true); $('human-feedback').focus(); return; }
+  app.reviewing = true; renderHumanLoop(app.run);
+  try {
+    await post(`/api/runs/${encodeURIComponent(app.runId)}/review`, { decision, feedback, review_id: app.run.review_request.id, report_version: app.run.report_version, product_id: $('human-product').value, requirements: $('human-requirements').value.trim(), keyword: $('human-keyword').value.trim(), subject: $('human-subject').value, body: $('human-body').value });
+    clearTimeout(app.poll); await pollRun(app.runId);
+    notice(decision === 'reject' ? 'Your decision is saved. The workflow has stopped.' : decision === 'revise' ? 'Your feedback is saved. The agent is continuing with your direction.' : 'Your approval is saved. The agent is continuing.');
+  } catch (error) { notice(error.message, true); }
+  finally { app.reviewing = false; if (app.run) renderHumanLoop(app.run); }
+}
+
 function renderReview(run) {
   const review = run.approval;
   if (!review) { $('review-result').hidden = true; return; }
@@ -679,6 +761,13 @@ function bindEvents() {
   $('refresh-history').addEventListener('click', loadHistory);
   $('save-button').addEventListener('click', saveRun);
   $('approve-button').addEventListener('click', approveRun);
+  ['approve', 'revise', 'reject'].forEach((decision) => $(`human-${decision}`).addEventListener('click', () => reviewAgent(decision)));
+  $('human-review-start').addEventListener('click', () => buttonAction($('human-review-start'), async () => {
+    await post(`/api/runs/${encodeURIComponent(app.runId)}/review-start`);
+    clearTimeout(app.poll); await pollRun(app.runId);
+    notice('The agent is reviewing your saved research. No sources are being collected again.');
+  }, 'Opening agent review…'));
+  $('human-product').addEventListener('change', () => { if (app.run) renderHumanLoop(app.run); });
   $('review-note').addEventListener('input', updateSaveState);
   $('cancel-button').addEventListener('click', () => {
     if (app.status?.deployment?.role === 'demo' && app.run?.mode === 'live') return;

@@ -805,6 +805,89 @@ class BrowserCollector:
         finally:
             script.unlink(missing_ok=True)
 
+    def collect_suppliers(self, brief, product, *, stop=None):
+        """Read public directory evidence; badges are observations, not our guarantees."""
+        with self._lock:
+            query = product.get('title') or product.get('product') or product.get('name') or brief['keyword']
+            query = query if isinstance(query, str) and 2 <= len(query.strip()) <= 100 else brief['keyword']
+            url = 'https://www.made-in-china.com/productdirectory.do?' + urlencode(
+                {'word': query.strip(), 'subaction': 'hunt', 'mode': 'and', 'code': '0'})
+            result = {'suppliers': [], 'status': 'failed', 'url': url,
+                      'captured_at': datetime.now(timezone.utc).isoformat(),
+                      'notes': ['Directory badges are recorded as displayed, not independently verified. Product fit, certifications, samples and commercial terms need human checks. No supplier was contacted.']}
+            # Fixed browser code and a JSON URL: the LLM never supplies JavaScript.
+            code = r'''async page => {
+              const result = {suppliers: [], status: 'failed', notes: []};
+              const safe = raw => { try { const u = new URL(raw); return u.protocol === 'https:' &&
+                !u.username && !u.password && !u.port && /^[a-z0-9-]+\.en\.made-in-china\.com$/.test(u.hostname) ? u.href : null; } catch { return null; } };
+              const visit = async url => {
+                const response = await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 20000});
+                const u = new URL(page.url());
+                if (u.protocol !== 'https:' || !(u.hostname === 'www.made-in-china.com' || safe(u.href))) throw new Error('Directory redirected outside allowed public pages.');
+                const body = await page.locator('body').innerText({timeout: 5000});
+                if ([403, 429].includes(response?.status()) || /captcha|verify (?:you are|that you are) human|access denied|robot check|security verification/i.test(body)) {
+                  result.status = 'blocked'; result.notes.push('Directory access check stopped collection; no bypass was attempted.'); return false;
+                }
+                if ((response?.status() || 200) >= 400) throw new Error('Directory page could not be read.');
+                return true;
+              };
+              try {
+                if (!await visit(/*SEARCH_URL*/)) return result;
+                await page.locator('.J-prod-list .list-img, .J-prod-list .list-item').first().waitFor({timeout: 8000});
+                const candidates = await page.locator('.J-prod-list .list-img, .J-prod-list .list-item').evaluateAll(cards => cards.slice(0, 15).map(card => {
+                  const company = card.querySelector('.company-name a');
+                  return {name: company?.innerText?.trim(), url: company?.href,
+                    product: card.querySelector('.product-name')?.innerText?.trim().slice(0, 400),
+                    snippet: card.innerText.slice(0, 700)};
+                }));
+                const seen = new Set();
+                for (const item of candidates) {
+                  const profile = safe(item.url);
+                  if (!profile || new URL(profile).pathname !== '/' || !item.name || seen.has(profile)) continue;
+                  seen.add(profile);
+                  if (!await visit(profile)) return result;
+                  const observed = await page.evaluate(() => ({
+                    audit: document.querySelector('.shop-sign__as')?.innerText?.trim() || null,
+                    license: [...document.querySelectorAll('.shop-sign *')].some(el => el.innerText?.trim() === 'Suppliers with verified business licenses'),
+                    contact: [...document.querySelectorAll('a[href]')].find(a => a.pathname === '/contact-info.html')?.href || null,
+                    email: [...document.querySelectorAll('a[href^="mailto:"]')].find(a => a.textContent.includes('@'))?.getAttribute('href')?.slice(7).split('?')[0] || null
+                  }));
+                  const badges = [observed.audit === 'Audited Supplier' ? 'Audited Supplier' : null,
+                    observed.license ? 'Suppliers with verified business licenses' : null].filter(Boolean);
+                  result.suppliers.push({id: `supplier-${result.suppliers.length + 1}`, name: item.name.slice(0, 200), url: profile,
+                    product: item.product, verification: badges.length ? `Directory badge observed: ${badges.join('; ')}` : 'Unverified: no supported directory badge observed.',
+                    verification_url: badges.length ? page.url() : null,
+                    contact_url: safe(observed.contact) && new URL(observed.contact).hostname === new URL(profile).hostname ? observed.contact : null,
+                    email: /^[^\s@<>]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(observed.email || '') ? observed.email : null, captured_at: new Date().toISOString(),
+                    notes: [`Search card: ${item.snippet}`, 'Certification and product quality were not independently checked.']});
+                  if (result.suppliers.length === 3) break;
+                }
+                result.status = result.suppliers.length ? 'live' : 'failed';
+                if (!result.suppliers.length) result.notes.push('No readable supplier cards matched the public directory layout.');
+              } catch (error) { result.status = result.suppliers.length ? 'live' : 'failed'; result.notes.push(`Supplier collection stopped: ${error.message?.slice(0, 180) || 'page error'}`); }
+              return result;
+            }'''.replace('/*SEARCH_URL*/', json.dumps(url, ensure_ascii=True))
+            folder = self.root / '.playwright-cli'
+            folder.mkdir(parents=True, exist_ok=True)
+            script = folder / f'suppliers-{uuid4().hex}.js'
+            try:
+                self._event('suppliers', 'running', f'Searching public supplier profiles for “{query}”.')
+                script.write_text(code, encoding='utf-8')
+                self._cli(['tab-new', 'about:blank'], stop=stop)
+                output = self._cli(['run-code', '--filename=' + str(script.resolve())], stop=stop, timeout=110)
+                section = re.search(r'### Result\s*\n(.*?)(?=\n### |\Z)', output, re.S)
+                data = json.loads(section.group(1)) if section else None
+                if not isinstance(data, dict) or data.get('status') not in ('live', 'blocked', 'failed'):
+                    raise BrowserError('Supplier script did not return structured evidence.')
+                result.update({key: data[key] for key in ('suppliers', 'status')})
+                result['notes'].extend(data.get('notes', []))
+            except (BrowserError, ValueError, TypeError, OSError) as exc:
+                result['notes'].append(str(exc)[:300])
+            finally:
+                script.unlink(missing_ok=True)
+                self._event('suppliers', result['status'], f"Supplier research: {len(result['suppliers'])} public profiles.")
+            return result
+
     def collect_amazon(self, brief, searches, stop=None):
         with self._lock:
             evidence = {'id': 'amazon-research', 'source': 'marketplace', 'status': 'failed',

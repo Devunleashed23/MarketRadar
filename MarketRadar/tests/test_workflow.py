@@ -6,6 +6,23 @@ from MarketRadar.core import Radar, validate_brief, validate_report
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_native_review_rejects_stale_or_invalid_approval_and_survives_restart(self):
+        with tempfile.TemporaryDirectory() as folder:
+            radar = Radar(folder)
+            run = radar._create(validate_brief({'keyword': 'mug'}), 'live', False)
+            request = {'id': 'pending-product', 'action_requests': [{'name': 'approve_product',
+                'args': {'product_id': 'B000000001', 'requirements': ''}}]}
+            radar._change(run['id'], state='awaiting_review', review_request=request, report={'summary': 'Review'})
+            # Waiting for a human is durable, not an abandoned running process.
+            radar = Radar(folder)
+            self.assertEqual(radar.get(run['id'])['state'], 'awaiting_review')
+            for payload in ({'review_id': 'old', 'report_version': 1, 'decision': 'approve'},
+                            {'review_id': 'pending-product', 'report_version': 2, 'decision': 'approve'},
+                            {'review_id': 'pending-product', 'report_version': 1, 'decision': 'approve'},
+                            {'review_id': 'pending-product', 'report_version': 1, 'decision': 'revise', 'feedback': ''}):
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    radar.review(run['id'], payload)
+
     def test_rejects_invalid_market_and_external_competitors(self):
         with self.assertRaises(ValueError):
             validate_brief({'keyword': 'mug', 'marketplace': 'unknown'})

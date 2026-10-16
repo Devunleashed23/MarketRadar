@@ -202,6 +202,14 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
                     if len(pieces) != 4:
                         raise ValueError('Unknown run action.')
                     identity, action = pieces[2], pieces[3]
+                    if action == 'review-start':
+                        if not self._owner():
+                            return
+                        return self._json(radar.begin_review(identity), 202)
+                    if action == 'review':
+                        if not self._owner():
+                            return
+                        return self._json(radar.review(identity, body), 202)
                     if action == 'cancel':
                         if self.role == 'demo' and radar.get(identity)['mode'] == 'live':
                             return self._json({'error': 'Only the owner can cancel live research.'}, 403)

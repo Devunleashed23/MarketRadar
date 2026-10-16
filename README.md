@@ -42,7 +42,17 @@ Dashboard -> server.py -> Radar.start() -> background thread -> Radar._execute()
     -> save the report -> human review
 ```
 
-`create_deep_agent()` builds the LangGraph graph and its model/tool loop. The main agent delegates with DeepAgents' `task` tool. Its Google specialist owns Keyword Planner and Trends; its Amazon specialist chooses searches and calls the fixed scraper. Each specialist has only its own tools. Requests run sequentially because the browser session is shared.
+`create_deep_agent()` builds the LangGraph model/tool loop. The main agent delegates with `task`: Google owns Keyword Planner and Trends, Amazon chooses searches and calls the fixed scraper, and supplier-scout reads public supplier profiles after product approval. Each specialist has only its own tools. Requests run sequentially because the browser session is shared.
+
+## Human and agent workflow
+
+Live research pauses at `approve_product` using DeepAgents' `interrupt_on`. The dashboard can approve/edit the selected product and requirements, reject it, or send feedback and a new keyword back into research. A revision keeps the old report/evidence in `report_history` and creates a new report version. Completed live reports also offer **Review this research with the agent**, reusing the original capture dates until a revision is requested.
+
+After product approval, supplier-scout runs a fixed Playwright script over public Made-in-China supplier profiles. Displayed audit/license badges are source observations, not our guarantee of identity, certificates, quality or suitability. The main agent proposes one inquiry and pauses again at `contact_supplier`. The human can edit its exact subject/body, request another draft, or stop. Recipients come from observed supplier evidence and cannot be replaced by the model.
+
+`Radar.review()` validates the pending interrupt ID and report version, records the human decision, and resumes with LangGraph `Command(resume=...)`. `SqliteSaver` stores messages and pending approvals in `.data/checkpoints.sqlite`; existing JSON files retain readable reports, source records and decision history. Waiting approvals survive a server restart. One persistent `/data` volume is sufficient for the single-service demo; a separate database server is unnecessary. A new provider without the original volume does not retain the workspace.
+
+Email delivery is optional: set `MARKETRADAR_SMTP_HOST`, `MARKETRADAR_SMTP_PORT` (default 587 with STARTTLS), `MARKETRADAR_SMTP_FROM`, and optional `MARKETRADAR_SMTP_USER` / `MARKETRADAR_SMTP_PASSWORD` through runtime secrets. Without email configuration or an observed email, the approved draft offers a manual email/contact-page handoff. Sending/unknown outcomes are recorded before allowing further activity; there is no automatic resend. No supplier messages were sent during implementation checks.
 
 LangChain's `@tool` defines typed callable tools; LangGraph carries messages, tool calls and results between turns. `ResearchChatModel.bind_tools()` exposes tool schemas to the existing JSON provider and turns its response into a LangChain `AIMessage`. LangGraph executes those calls. The Codex subprocess itself has tools disabled. No handwritten LLM loop remains in `browser.py`.
 
@@ -60,7 +70,7 @@ Every report contains summary, observations, products with demand signals, compl
 
 Google Trends measures relative interest, not sales. Keyword Planner competition describes Google advertising. Amazon's bought-in-past-month labels are recorded as displayed. Reviews can pool variants/countries and are not a representative survey. Google country/language/date selections do not change Amazon delivery settings or filter its reviews. Unverified filters and missing sources remain disclosed.
 
-The DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. It used fifteen model turns and produced a validated report with two follow-ups. Source-filter limitations remain disclosed. All 111 tests pass; the graph fixture also verifies delegation, real tool execution, citation correction and termination without another model call.
+The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. The human-review extension passes 114 application tests and four supervisor tests, including real graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. Supplier live access and configured email delivery need deployment verification.
 
 ## Supporting files
 

@@ -84,7 +84,7 @@ class WorkflowIntegrationTests(unittest.TestCase):
         self.addCleanup(environment.stop)
         # These fixtures cover workspace/history writes, not agent reasoning.
         # A real DeepAgents delegation/tool fixture lives in test_original_agents.
-        def research_fixture(brief, model, browser, *, stop=None, emit=None, on_evidence=None):
+        def research_fixture(brief, model, browser, *, stop=None, emit=None, on_evidence=None, **kwargs):
             evidence = browser.collect(brief, model, stop=stop)
             if on_evidence:
                 on_evidence(evidence)

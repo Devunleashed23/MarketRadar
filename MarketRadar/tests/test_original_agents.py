@@ -6,7 +6,9 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import tempfile
 import unittest
+from unittest.mock import patch
 
 
 EVIDENCE = [{'id': 'planner-live', 'source': 'keyword_planner', 'status': 'live',
@@ -112,6 +114,103 @@ class OriginalAgentStageTests(unittest.TestCase):
 
 
 class DeepAgentWorkflowTests(unittest.TestCase):
+    def test_product_feedback_recollects_sources_and_reaches_a_new_review(self):
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from MarketRadar.agents import run_research
+        product = {'asin': 'B000000001', 'title': 'Fixture bottle'}
+        evidence = copy.deepcopy(EVIDENCE) + [{'id': 'amazon-research', 'source': 'marketplace',
+            'status': 'live', 'data': {'products': [product]}}]
+        session = {'id': 'feedback-fixture', 'report': dict(ANALYSIS), 'evidence': evidence}
+        choices = [('approve_product', {'product_id': product['asin'], 'requirements': ''}),
+            ('revise_research', {}), ('task', {'subagent_type': 'google-demand', 'description': 'Research easy-clean bottles.'}),
+            ('open_google', {'source': 'keyword_planner'}), ('open_google', {'source': 'google_trends'}),
+            (None, 'Google attempted.'), ('task', {'subagent_type': 'amazon-reviews', 'description': 'Research easy-clean bottles.'}),
+            ('research_amazon', {'searches': []}), (None, 'Products collected.'), ('read_evidence', {}),
+            ('finalize_report', {'report': dict(ANALYSIS, recommendations=[])}),
+            ('approve_product', {'product_id': product['asin'], 'requirements': 'Easy to clean'})]
+        class Provider:
+            model, turn = 'fixture', 0
+            def complete_json(self, system, prompt, **kwargs):
+                name, args = choices[self.turn]
+                self.turn += 1
+                if self.turn > 1:
+                    assert 'easy-clean' in prompt
+                return {'content': '' if name else args, 'tool_calls': [] if not name else [
+                    {'name': name, 'args': json.dumps(args), 'id': f'feedback-{self.turn}'}]}
+        class Browser:
+            keywords = []
+            def open_google(self, source, brief, stop=None):
+                self.keywords.append(brief['keyword'])
+                return {'evidence': next(row for row in evidence if row['source'] == source)}
+            def collect_amazon(self, brief, searches, stop=None):
+                self.keywords.append(brief['keyword'])
+                return evidence[-1]
+        provider, browser = Provider(), Browser()
+        with tempfile.TemporaryDirectory() as folder:
+            with SqliteSaver.from_conn_string(str(Path(folder) / 'checkpoint.sqlite')) as saver:
+                run_research(BRIEF, provider, browser, session=session, checkpointer=saver)
+                session.update(revision_requested=True, human_feedback='Focus on easy-clean bottles.')
+                run_research(dict(BRIEF, keyword='easy-clean bottle'), provider, browser, session=session,
+                    checkpointer=saver, resume={'decisions': [{'type': 'reject', 'message': session['human_feedback']}]})
+            self.assertEqual(browser.keywords, ['easy-clean bottle'] * 3)
+            self.assertEqual(session['state'], 'awaiting_review')
+            self.assertEqual(session['review_request']['action_requests'][0]['args']['requirements'], 'Easy to clean')
+
+    def test_native_review_resumes_after_restart_and_never_contacts_before_approval(self):
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        from MarketRadar.agents import run_research
+        product = {'asin': 'B000000001', 'title': 'Fixture mug', 'url': 'https://www.amazon.com/dp/B000000001'}
+        session = {'id': 'review-fixture', 'report': dict(ANALYSIS), 'evidence': copy.deepcopy(EVIDENCE) + [
+            {'id': 'amazon-research', 'source': 'marketplace', 'status': 'live', 'data': {'products': [product]}}]}
+        draft = {'supplier_id': 'supplier-1', 'subject': 'Sample inquiry', 'body': 'Can you provide a leak-resistant lid sample?'}
+
+        class Provider:
+            model = 'fixture'
+            turn = 0
+            def complete_json(self, system, prompt, **kwargs):
+                sequence = [('approve_product', {'product_id': product['asin'], 'requirements': 'Leak-resistant lid'}),
+                    ('task', {'subagent_type': 'supplier-scout', 'description': 'Check suppliers for the approved mug.'}),
+                    ('find_suppliers', {}), (None, 'Supplier profile observed; samples need checking.'),
+                    ('contact_supplier', draft), ('contact_supplier', dict(draft, body='Please quote a sample and show your audit report.'))]
+                name, args = sequence[self.turn]
+                self.turn += 1
+                if name is None:
+                    return {'content': args, 'tool_calls': []}
+                return {'content': '', 'tool_calls': [{'name': name, 'args': json.dumps(args), 'id': f'review-{self.turn}'}]}
+
+        class Browser:
+            calls = 0
+            def collect_suppliers(self, brief, choice, stop=None):
+                self.calls += 1
+                assert choice['requirements'] == 'Leak-resistant lid'
+                return {'status': 'live', 'notes': [], 'suppliers': [{'id': 'supplier-1', 'name': 'Fixture supplier',
+                    'url': 'https://fixture.en.made-in-china.com/', 'email': 'sales@example.com'}]}
+
+        provider, browser = Provider(), Browser()
+        with tempfile.TemporaryDirectory() as folder, patch.dict('os.environ', {'MARKETRADAR_SMTP_HOST': ''}):
+            def invoke(resume=None):
+                # Close/reopen the DB and reconstruct the agent as a server restart would.
+                with SqliteSaver.from_conn_string(str(Path(folder) / 'checkpoints.sqlite')) as saver:
+                    return run_research(BRIEF, provider, browser, session=session, checkpointer=saver, resume=resume)
+            invoke()
+            self.assertEqual(session['state'], 'awaiting_review')
+            self.assertEqual(session['review_request']['action_requests'][0]['name'], 'approve_product')
+            self.assertEqual(browser.calls, 0)
+            invoke({'decisions': [{'type': 'approve'}]})
+            self.assertEqual(browser.calls, 1)
+            self.assertNotIn('outreach', session)
+            self.assertEqual(session['review_request']['action_requests'][0]['name'], 'contact_supplier')
+            session['human_feedback'] = 'Ask for the audit report before discussing quantities.'
+            invoke({'decisions': [{'type': 'reject', 'message': session['human_feedback']}]})
+            self.assertNotIn('outreach', session)
+            self.assertIn('audit report', session['review_request']['action_requests'][0]['args']['body'])
+            invoke({'decisions': [{'type': 'edit', 'edited_action': {'name': 'contact_supplier',
+                'args': dict(draft, body='Human-edited sample request.')}}]})
+            self.assertEqual(session['outreach']['status'], 'approved_draft')
+            self.assertEqual(session['outreach']['body'], 'Human-edited sample request.')
+            self.assertTrue(session['closed'])
+            self.assertEqual(provider.turn, 6)
+
     def test_real_graph_delegates_executes_tools_and_validates_citations(self):
         from MarketRadar.agents import run_research
         from MarketRadar.browser import BrowserCollector

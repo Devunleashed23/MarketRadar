@@ -11,7 +11,7 @@ import uuid
 from .fastn import FastnClient
 from .settings import Settings
 
-FINAL_STATES = ('completed', 'failed', 'cancelled', 'interrupted')
+FINAL_STATES = ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_review')
 
 
 def now():
@@ -219,7 +219,7 @@ class Radar:
         self._event(identity, 'cancelling', 'Cancellation requested; stopping the active subprocess.')
         return self.get(identity)
 
-    def _execute(self, identity):
+    def _execute(self, identity, decision=None):
         stop = self.stops[identity]
         run = self.get(identity)
         brief = run['brief']
@@ -260,7 +260,7 @@ class Radar:
                 self._change(identity, evidence=evidence, report=report, state='completed')
                 return
             self._change(identity, state='loading')
-            if run['use_fastn']:
+            if run['use_fastn'] and decision is None:
                 client = self.fastn_factory(self.settings.get())
                 self._event(identity, 'fastn', 'Loading research context through the configured fastn MCP tool.')
                 loaded = client.load_brief(brief, identity)
@@ -289,8 +289,12 @@ class Radar:
             workspace_context = self.get(identity).get('fastn_context')
             if workspace_context is not None:
                 agent_brief['workspace_context'] = workspace_context
-            evidence, report = run_research(agent_brief, model, browser, stop=stop, emit=emit,
-                on_evidence=lambda records: self._change(identity, evidence=records))
+            from langgraph.checkpoint.sqlite import SqliteSaver
+            with SqliteSaver.from_conn_string(str(self.directory / 'checkpoints.sqlite')) as saver:
+                evidence, report = run_research(agent_brief, model, browser, stop=stop, emit=emit,
+                    on_evidence=lambda records: self._change(identity, evidence=records),
+                    session=run, checkpointer=saver, resume=decision,
+                    on_update=lambda **fields: self._change(identity, **fields))
             successes = [e for e in evidence if e.get('status') in ('live', 'imported')]
             check()
             if any(e.get('status') not in ('live', 'imported') for e in evidence):
@@ -299,8 +303,11 @@ class Radar:
                 unverified = [key for key, verified in source.get('settings_verified', {}).items() if not verified]
                 if unverified:
                     report['limitations'].append(f"{source['source']}: requested {', '.join(unverified)} settings were not confirmed in the source UI.")
-            self._change(identity, report=report, state='completed')
-            self._event(identity, 'completed', 'Research ready. Review the evidence and record which follow-ups you approve.')
+            report['limitations'] = list(dict.fromkeys(report['limitations']))
+            pending = self.get(identity).get('state') == 'awaiting_review'
+            self._change(identity, report=report, state='awaiting_review' if pending else 'completed')
+            if not pending:
+                self._event(identity, 'completed', 'Workflow finished. Human decisions and any supplier handoff are saved in History.')
         except Exception as exc:
             message = str(exc)
             secret = self.settings.get().get('api_key', '')
@@ -308,6 +315,87 @@ class Radar:
                 message = message.replace(secret, '[redacted]')
             self._change(identity, state='cancelled' if stop.is_set() else 'failed', error=message[:2500])
             self._event(identity, 'failed', message)
+
+    def begin_review(self, identity):
+        """Continue a saved live report with native approval, preserving its capture dates."""
+        with self.lock:
+            run = self.get(identity)
+            if (run['mode'] != 'live' or run['state'] != 'completed' or not run.get('report')
+                    or run.get('review_history') or run.get('closed')):
+                raise ValueError('Choose a completed live report that has not entered agent review.')
+            if any(thread.is_alive() for thread in self.threads.values()):
+                raise ValueError('Another research action is still running.')
+            self._change(identity, state='queued')
+            self._event(identity, 'human_review', 'Continuing the saved report with its original evidence capture dates; sources are not refreshed until you request a revision.')
+            self.stops[identity] = threading.Event()
+            thread = threading.Thread(target=self._execute, args=(identity,), daemon=True)
+            self.threads[identity] = thread
+            thread.start()
+            return self.get(identity)
+
+    def review(self, identity, body):
+        """Resume the exact DeepAgents interrupt with a human decision, never a model decision."""
+        with self.lock:
+            run = self.get(identity)
+            request = run.get('review_request') or {}
+            if (run['state'] != 'awaiting_review' or body.get('review_id') != request.get('id')
+                    or type(body.get('report_version')) is not int or body['report_version'] != run['report_version']):
+                raise ValueError('This review is stale. Reload the pending proposal before deciding.')
+            if any(thread.is_alive() for thread in self.threads.values()):
+                raise ValueError('Another research action is still running.')
+            decision, feedback = body.get('decision'), body.get('feedback', '')
+            if decision not in ('approve', 'revise', 'reject') or not isinstance(feedback, str) or len(feedback) > 2000:
+                raise ValueError('Choose approve, revise or reject, with feedback of at most 2000 characters.')
+            action = request['action_requests'][0]
+            name, args = action['name'], dict(action['args'])
+            fields = {'state': 'queued', 'review_request': None, 'error': None}
+            if decision == 'approve':
+                if name == 'approve_product':
+                    args = {'product_id': body.get('product_id', args.get('product_id')),
+                            'requirements': body.get('requirements', args.get('requirements', ''))}
+                    products = [p for r in run['evidence'] if r['source'] == 'marketplace'
+                                for p in r.get('data', {}).get('products', [])]
+                    if not any(p.get('asin') == args['product_id'] for p in products):
+                        raise ValueError('Choose a product from the collected Amazon evidence.')
+                    if not isinstance(args['requirements'], str) or len(args['requirements']) > 2000:
+                        raise ValueError('Product requirements must be text of at most 2000 characters.')
+                elif name == 'contact_supplier':
+                    args.update({key: body[key] for key in ('subject', 'body') if key in body})
+                    if (not isinstance(args.get('subject'), str) or not 1 <= len(args['subject'].strip()) <= 200
+                            or any(c in args['subject'] for c in '\r\n')
+                            or not isinstance(args.get('body'), str) or not 1 <= len(args['body'].strip()) <= 5000):
+                        raise ValueError('Review a valid subject and message before approving.')
+                else:
+                    raise ValueError('Unknown human approval gate.')
+                native = {'type': 'edit', 'edited_action': {'name': name, 'args': args}}
+            else:
+                native = {'type': 'reject', 'message': feedback.strip() or 'The human declined this action.'}
+                if decision == 'reject':
+                    fields['closed'] = True
+                elif not feedback.strip():
+                    raise ValueError('Tell the agent what to change before requesting a revision.')
+                elif name == 'approve_product':
+                    redirected = body.get('keyword') and body['keyword'].strip() != run['brief']['keyword']
+                    fields.update(revision_requested=True, approved_product=None, suppliers=None, outreach=None,
+                                  report_version=run['report_version'] + 1,
+                                  brief=validate_brief(dict(run['brief'], keyword=body.get('keyword') or run['brief']['keyword'],
+                                      **({'product_url': '', 'competitor_urls': []} if redirected else {}))))
+                    fields['report_history'] = (run.get('report_history', []) + [{'version': run['report_version'],
+                        'report': run['report'], 'evidence': run['evidence']}])[-5:]
+                else:
+                    # Keep the same observed supplier candidates; the rejection goes back to the model.
+                    fields['outreach'] = None
+            fields['human_feedback'] = feedback.strip()
+            fields['review_history'] = (run.get('review_history', []) + [{'at': now(), 'stage': name,
+                'decision': decision, 'feedback': feedback.strip(), 'report_version': run['report_version'],
+                'review_id': request['id'], 'approved_args': args if decision == 'approve' else None}])[-30:]
+            self._change(identity, **fields)
+            self._event(identity, 'human_feedback', f'Human decision: {decision}. ' + feedback.strip())
+            self.stops[identity] = threading.Event()
+            thread = threading.Thread(target=self._execute, args=(identity, {'decisions': [native]}), daemon=True)
+            self.threads[identity] = thread
+            thread.start()
+            return self.get(identity)
 
     @staticmethod
     def _select_actions(run, approved_action_ids):
