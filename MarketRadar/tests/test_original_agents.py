@@ -151,6 +151,10 @@ class DeepAgentWorkflowTests(unittest.TestCase):
                 self.turn += 1
                 available = {entry['function']['name'] for entry in request['available_tools']}
                 assert not available.intersection({'execute', 'read_file', 'write_file', 'ls', 'grep'})
+                # Reproduce the live failure: after Google, prefer reading early
+                # whenever the orchestrator still exposes that premature action.
+                if self.turn == 6 and 'read_evidence' in available:
+                    name, args = 'read_evidence', {}
                 if name is None:
                     return {'content': args, 'tool_calls': []}
                 assert name in available, (name, available)
@@ -175,6 +179,11 @@ class DeepAgentWorkflowTests(unittest.TestCase):
         self.assertEqual(provider.turn, 11)  # Correct one citation, then exit without another model call.
         self.assertEqual({row['id'] for row in evidence}, {'planner-live', 'trends-live', 'amazon-research'})
         self.assertEqual(output['complaints'][0]['review_ids'], ['R-FIXTURE'])
+        for index, required in ((0, 'task'), (5, 'task'), (8, 'read_evidence'),
+                                (9, 'finalize_report'), (10, 'finalize_report')):
+            request = provider.requests[index]
+            self.assertEqual([entry['function']['name'] for entry in request['available_tools']], [required])
+            self.assertEqual(request['tool_choice'], required)
         self.assertFalse(hasattr(BrowserCollector, '_collect_source'))
 
 

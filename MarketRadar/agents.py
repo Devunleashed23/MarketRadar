@@ -9,6 +9,7 @@ from deepagents import (GeneralPurposeSubagentProfile, HarnessProfile,
                         create_deep_agent, register_harness_profile)
 from deepagents.backends import StateBackend
 from langchain.agents.middleware import before_model, wrap_model_call
+from langchain_core.messages import SystemMessage
 from langchain_core.tools import tool
 
 from .models import ResearchChatModel
@@ -63,6 +64,22 @@ def run_research(brief, provider, browser, *, stop=None, emit=None, on_evidence=
         def require_tools(request, handler):
             return handler(request.override(tool_choice='auto' if done() else 'required'))
         return require_tools
+
+    @wrap_model_call
+    def research_order(request, handler):
+        # Expose only the next valid action; a prompt alone cannot enforce order.
+        if not {'keyword_planner', 'google_trends'} <= attempted:
+            name, instruction = 'task', 'Delegate google-demand to finish both Google sources.'
+        elif 'marketplace' not in attempted:
+            name, instruction = 'task', 'Google is finished. Delegate amazon-reviews with useful keyword ideas.'
+        elif not inspected:
+            name, instruction = 'read_evidence', 'Both specialists finished. Read their canonical evidence.'
+        else:
+            name, instruction = 'finalize_report', 'Submit the report using the canonical evidence; correct any validation errors.'
+        system = request.system_message.text if request.system_message else ''
+        return handler(request.override(
+            tools=[item for item in request.tools if item.name == name], tool_choice=name,
+            system_message=SystemMessage(content=system + '\nCurrent workflow stage: ' + instruction)))
 
     @before_model(can_jump_to=['end'])
     def finish_when_saved(state, runtime):
@@ -157,7 +174,7 @@ Summarize important features, feedback and limitations with actual review IDs;
 distinguish buyer requests from inferred gaps. Do not call the scraper repeatedly."""}
     orchestrator = create_deep_agent(
         model=chat, backend=StateBackend(), subagents=[google, amazon],
-        middleware=[require_research(lambda: False), finish_when_saved],
+        middleware=[research_order, finish_when_saved],
         tools=[read_evidence, finalize_report], name='MarketRadar',
         system_prompt=POLICY + context + '\n' + REPORT_FORMAT + """
 Delegate sequentially with task: first google-demand, then amazon-reviews. Include
