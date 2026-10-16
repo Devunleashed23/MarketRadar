@@ -18,7 +18,7 @@ class ManagedBrowserTests(unittest.TestCase):
         with patch('MarketRadar.browser.shutil.which', return_value='node'), patch.object(Path, 'is_file', return_value=True), \
                 patch('MarketRadar.browser.subprocess.Popen') as launch:
             launch.return_value.returncode = 1
-            launch.return_value.communicate.return_value = ('Error: fixture namespace failure https://example.com/?token=hidden Bearer secret-value', None)
+            launch.return_value.communicate.return_value = ('FATAL: fixture namespace failure https://example.com/?token=hidden Bearer secret-value\n' + 'stack frame\n' * 500, None)
             with self.assertRaisesRegex(RuntimeError, 'fixture namespace failure') as raised:
                 browser._cli(['open', 'about:blank'])
             self.assertNotIn('secret-value', str(raised.exception))

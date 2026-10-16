@@ -214,7 +214,9 @@ class BrowserCollector:
                 raise BrowserError('Playwright CLI: ' + safe)
             if self.mode != 'extension' and args[0] == 'open':
                 # Launch errors can be plain text rather than a ### Error block.
-                safe = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', output[-3000:])
+                causes = [line for line in output.splitlines() if re.search(
+                    r'FATAL|No usable sandbox|Operation not permitted|Failed to move|Check failed|permission denied|EACCES|ENOENT', line, re.I)]
+                safe = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', '\n'.join(causes) if causes else output[-3000:])
                 safe = re.sub(r'(?:https?|wss?)://\S+', '[url]', _redact(safe))
                 safe = re.sub(r'(?i)\bBearer\s+\S+', 'Bearer [redacted]', safe)
                 raise BrowserError(f'Managed browser launch exited {process.returncode}: ' + safe[-1800:])
