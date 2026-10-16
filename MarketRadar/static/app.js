@@ -617,9 +617,9 @@ function renderHumanLoop(run) {
     $('human-keyword').value = ''; $('human-feedback').value = '';
     $('human-subject').value = args.subject || ''; $('human-body').value = args.body || '';
     const supplier = suppliers.find((s) => s.id === args.supplier_id) || {};
-    $('human-recipient').textContent = `Recipient: ${args.recipient || supplier.email || 'Contact through the supplier website'}${supplier.name ? ` · ${supplier.name}` : ''}`;
+    $('human-recipient').textContent = `Recipient: ${supplier.email || 'Contact through the supplier website'}${supplier.name ? ` · ${supplier.name}` : ''}`;
     $('human-contact-source').replaceChildren();
-    const link = externalLink(args.contact_url || supplier.contact_url, 'Inspect supplier contact source ↗'); if (link) $('human-contact-source').append(link);
+    const link = externalLink(supplier.contact_url || supplier.url, 'Inspect supplier contact source ↗'); if (link) $('human-contact-source').append(link);
     app.humanHydrated = key;
   }
   $('human-approve').textContent = contact ? 'Approve message' : 'Approve product & find suppliers';

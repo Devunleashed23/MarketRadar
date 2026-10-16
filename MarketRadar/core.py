@@ -360,7 +360,10 @@ class Radar:
                     if not isinstance(args['requirements'], str) or len(args['requirements']) > 2000:
                         raise ValueError('Product requirements must be text of at most 2000 characters.')
                 elif name == 'contact_supplier':
-                    args.update({key: body[key] for key in ('subject', 'body') if key in body})
+                    args = {'supplier_id': args.get('supplier_id'),
+                            **{key: body.get(key, args.get(key)) for key in ('subject', 'body')}}
+                    if not any(s.get('id') == args['supplier_id'] for s in (run.get('suppliers') or {}).get('suppliers', [])):
+                        raise ValueError('The proposed supplier is not in the collected evidence. Request a revised proposal.')
                     if (not isinstance(args.get('subject'), str) or not 1 <= len(args['subject'].strip()) <= 200
                             or any(c in args['subject'] for c in '\r\n')
                             or not isinstance(args.get('body'), str) or not 1 <= len(args['body'].strip()) <= 5000):
