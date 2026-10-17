@@ -39,17 +39,12 @@ def get_google_model(**kwargs):
 
 
 def get_research_model(provider=None, **kwargs):
-    """Select an explicit JSON inference provider, without credential transfer or fallback."""
-    selected = (provider or os.getenv("MARKETRADAR_PROVIDER", "codex")).lower()
-    if selected == "codex":
-        from MarketRadar.models import CodexModel
-        return CodexModel(**kwargs)
-    if selected in ("alternate_clouds", "alternate"):
-        from MarketRadar.cloud_model import CloudModel
-        return CloudModel(**kwargs)
-    if selected == "google":
-        raise ValueError("Use get_google_model for legacy LangChain agents; MarketRadar requires the JSON inference interface.")
-    raise ValueError("Choose codex or alternate_clouds provider.")
+    """Use Alternate Clouds organization inference; no provider fallback."""
+    selected = (provider or os.getenv("MARKETRADAR_PROVIDER") or "alternate_clouds").lower()
+    if selected not in ("alternate_clouds", "alternate"):
+        raise ValueError("MarketRadar uses the alternate_clouds provider.")
+    from MarketRadar.cloud_model import CloudModel
+    return CloudModel(**kwargs)
 
 
 def __getattr__(name):

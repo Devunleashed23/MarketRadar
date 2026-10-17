@@ -34,10 +34,12 @@ RUN pip install --no-cache-dir -r /app/MarketRadar/requirements.txt \
     && chown -R 10001:10001 /data /home/marketradar
 
 # Explicit inputs: never COPY the repository, .env, browser profile, or .data.
-COPY MarketRadar/*.py /app/MarketRadar/
+COPY MarketRadar/__init__.py MarketRadar/__main__.py MarketRadar/agents.py \
+     MarketRadar/browser.py MarketRadar/cloud_config.py MarketRadar/cloud_model.py \
+     MarketRadar/core.py MarketRadar/models.py MarketRadar/server.py /app/MarketRadar/
 COPY MarketRadar/amazon_research.js /app/MarketRadar/
 COPY MarketRadar/static/ /app/MarketRadar/static/
-COPY MarketRadar/deploy/ /app/MarketRadar/deploy/
+COPY MarketRadar/deploy/bootstrap.py MarketRadar/deploy/nginx.conf /app/MarketRadar/deploy/
 COPY subagents/__init__.py subagents/amazon_market_agent_v2.py subagents/listing_agent_v2.py /app/subagents/
 COPY models.py /app/models.py
 

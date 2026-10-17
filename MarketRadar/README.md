@@ -1,93 +1,65 @@
 # MarketRadar
 
-Product research using Google Keyword Planner, Google Trends, Amazon.com features/reviews, and a human-reviewed report. The local demo is at http://127.0.0.1:8877.
+Human-guided product research: combine Amazon customer feedback with Google search demand, identify product gaps, and research suppliers after a person approves the direction.
 
-Cloud demo: [MarketRadar](https://alternate-stormy-portal-764-docker-app.alternatefutures.ai). Owner/viewer credentials are in the private local `.data/cloud-login.txt`; credentials and browser profiles are excluded from Git and container images.
+[Live Alternate Clouds app](https://alternate-stormy-portal-764-docker-app.alternatefutures.ai/#research)
 
-## Start
+## What it does
 
-Run from the parent project directory:
+Enter a product or niche. A DeepAgents orchestrator delegates Google Keyword Planner and Trends to one specialist, and Amazon features and reviews to another. The model chooses search terms; fixed Playwright CLI scripts collect Amazon and supplier pages. The report contains demand signals, complaints, requested features, possible market gaps, source citations and collection limitations.
 
-```powershell
-.\MarketRadar\start.ps1
-# Equivalent:
-.\.venv\Scripts\python.exe -m MarketRadar --port 8877
+The workflow pauses for human product approval. A person can approve or edit the requirements, reject the direction, or send feedback and a new keyword back to the agent. After approval, a supplier specialist reads public supplier profiles. The orchestrator proposes an inquiry and pauses again so a person can inspect and edit its exact recipient, subject and message.
+
+Supplier audit badges are observations from source pages, not independent guarantees. Email delivery is optional; without configured email, approved inquiries remain drafts with manual contact links. No outreach runs without human approval.
+
+## Architecture
+
+```text
+Dashboard -> server.py -> Radar.start() -> agents.run_research()
+    -> DeepAgents orchestrator / LangGraph model-and-tool loop
+         task("google-demand") -> Keyword Planner + Trends tools
+         task("amazon-reviews") -> fixed Amazon Playwright script
+         read_evidence() -> finalize_report() -> approve_product() pause
+         task("supplier-scout") -> fixed supplier Playwright script
+         contact_supplier() pause -> approved delivery or manual draft
 ```
 
-The local app uses the existing Python environment, Node.js, Playwright CLI installation and signed-in Codex CLI. Attach Chrome from Connections and complete Google sign-in manually. Sample mode uses labeled synthetic evidence and makes no browser or model calls.
-
-## Read the code in this order
+LangChain defines the typed tools and model adapter. DeepAgents builds the orchestrator and its three specialists; LangGraph resumes human decisions with `Command(resume=...)`. The specialists run sequentially because they share one browser. The orchestrator must read canonical evidence before finalizing; report validation rejects unsupported citations. Unavailable sources remain disclosed.
 
 | File | Responsibility |
 | --- | --- |
-| `__main__.py` | Starts `server.main()`. |
-| `server.py` | Serves the dashboard/API; a research POST calls `Radar.start()`. |
-| `core.py` | Manages background jobs, report validation, history and human review. |
-| `agents.py` | Defines the DeepAgents orchestrator, three specialists and their LangChain tools. Start here to understand the agent architecture. |
-| `browser.py` | Model-free Playwright tools: Google observations/actions and scripted Amazon/supplier collection. |
-| `amazon_research.js` | Fixed Playwright script: search Amazon, read products, features and embedded reviews. No LLM calls. |
-| `models.py` | Local Codex subscription provider plus `ResearchChatModel`, the LangChain model adapter. |
-| `cloud_model.py` | Cloud `CloudModel.complete_json()` provider adapter. |
-| `static/` | HTML, CSS and JavaScript for forms, progress, reports and history. |
+| `server.py` | Dashboard API, access controls and research requests. |
+| `core.py` | Background jobs, report validation, saved history and human decisions. |
+| `agents.py` | DeepAgents orchestrator, specialists, tools and approval gates. |
+| `browser.py` | Playwright CLI commands and bounded source collection. |
+| `amazon_research.js` | Fixed Amazon search/product/review scraper. |
+| `models.py` | LangChain chat adapter used by the agent loop. |
+| `cloud_model.py` | Alternate Futures inference requests and model call limits. |
+| `cloud_config.py` | Owner/demo authentication and deployment configuration. |
+| `static/` | Dashboard HTML, CSS and JavaScript. |
+| `deploy/` | Container, browser viewer, startup and deployment checks. |
 
-The parent `models.py` contains `get_research_model()`, which selects the local or cloud provider. Evidence preparation and citation validation reuse helpers from the original `subagents/amazon_market_agent_v2.py`. The orchestrator now produces findings and follow-ups in one validated report.
+The parent `models.py` exposes the provider factory. Evidence preparation and citation validation reuse the original `subagents/amazon_market_agent_v2.py` helpers.
 
-## Main workflow and LLM calls
+## Run locally
 
-```text
-Dashboard -> server.py -> Radar.start() -> background thread -> Radar._execute()
-    -> agents.run_research() creates a DeepAgents orchestrator
-         task("google-demand") -> open_google / google_step tools
-         task("amazon-reviews") -> research_amazon tool -> fixed Playwright script
-         read_evidence() -> canonical source records and reviews
-         finalize_report(report) -> validate citations and save the report
-         approve_product(...) -> pause for human approval or research feedback
-         task("supplier-scout") -> find_suppliers -> fixed Playwright script
-         contact_supplier(...) -> pause for exact-message approval or feedback
-    -> approved email delivery or manual contact draft -> save history
+From the repository root, install `MarketRadar/requirements.txt` in a Python environment and install Playwright CLI with `npm install --no-save --package-lock=false @playwright/cli@0.1.18`. Set `AF_API_KEY` and `AF_ORG_ID` privately in your environment, then run:
+
+```powershell
+.\MarketRadar\start.ps1 --port 8877
+# Or: python -m MarketRadar --port 8877
 ```
 
-`create_deep_agent()` builds the LangGraph model/tool loop. The main agent delegates with `task`: Google owns Keyword Planner and Trends, Amazon chooses searches and calls the fixed scraper, and supplier-scout reads public supplier profiles after product approval. Each specialist has only its own tools. Requests run sequentially because the browser session is shared.
+Open http://127.0.0.1:8877. Local research uses the same Alternate Futures inference provider as the cloud deployment, defaulting to `gpt-5.6-luna`; `MARKETRADAR_CLOUD_MODEL` overrides the model. Attach a compatible Playwright CLI browser session from Connections. Complete source sign-ins manually. Sample mode is explicitly synthetic and makes no browser or model calls.
 
-## Human and agent workflow
+For the hosted app, use the owner's protected cloud browser from Connections. That browser has separate logins from local Chrome. Amazon reviews may require sign-in; Google Ads needs an account with Keyword Planner access. Verification pages require human action, and Trends may rate-limit cloud traffic. Missing access never becomes invented evidence.
 
-Live research pauses at `approve_product` using DeepAgents' `interrupt_on`. The dashboard can approve/edit the selected product and requirements, reject it, or send feedback and a new keyword back into research. A revision keeps the old report/evidence in `report_history` and creates a new report version. Completed live reports also offer **Review this research with the agent**, reusing the original capture dates until a revision is requested.
+## Storage and access
 
-After product approval, supplier-scout runs a fixed Playwright script over public Made-in-China supplier profiles. Displayed audit/license badges are source observations, not our guarantee of identity, certificates, quality or suitability. The main agent proposes one inquiry and pauses again at `contact_supplier`. The human can edit its exact subject/body, request another draft, or stop. Recipients come from observed supplier evidence and cannot be replaced by the model.
+Run JSON files retain reports, observations and decision history. LangGraph's `SqliteSaver` retains messages and pending approvals. Local history defaults to `~/.marketradar/runs`, outside the source tree; `MARKETRADAR_DATA_DIR` can override it. In the cloud, these live under `/data/runs`; the browser profile lives under `/data/profile`. One persistent `/data` volume and one service replica are sufficient for this demo. Back up this volume before replacing a deployment because a new provider may not retain it.
 
-If inference fails after product approval, **Continue approved workflow** resumes the saved research without asking for that product approval again. It is unavailable after an outreach attempt, so an uncertain delivery cannot be resent this way.
+The `owner` role runs live research, controls the browser and resumes agent approvals. The `demo` role explores saved reports, exports JSON and runs labeled samples. Passwords and inference credentials belong in runtime secrets, never Git. See [the deployment guide](deploy/README.md).
 
-`Radar.review()` validates the pending interrupt ID and report version, records the human decision, and resumes with LangGraph `Command(resume=...)`. `SqliteSaver` stores messages and pending approvals in `.data/checkpoints.sqlite`; existing JSON files retain readable reports, source records and decision history. Waiting approvals survive a server restart. One persistent `/data` volume is sufficient for the single-service demo; a separate database server is unnecessary. A new provider without the original volume does not retain the workspace.
+Local history and private operational backups stay outside the source folder under `~/.marketradar/`. `package_release.py` copies allowlisted source into `~/.marketradar/repository`; it is not part of the agent loop. Browser sessions, caches, environment files and private state are excluded from publication. Development tests are excluded from the running container.
 
-Email delivery is optional: set `MARKETRADAR_SMTP_HOST`, `MARKETRADAR_SMTP_PORT` (default 587 with STARTTLS), `MARKETRADAR_SMTP_FROM`, and optional `MARKETRADAR_SMTP_USER` / `MARKETRADAR_SMTP_PASSWORD` through runtime secrets. Without email configuration or an observed email, the approved draft offers a manual email/contact-page handoff. Sending/unknown outcomes are recorded before allowing further activity; there is no automatic resend. No supplier messages were sent during implementation checks.
-
-LangChain's `@tool` defines typed callable tools; LangGraph carries messages, tool calls and results between turns. `ResearchChatModel.bind_tools()` exposes tool schemas to the existing JSON provider and turns its response into a LangChain `AIMessage`. LangGraph executes those calls. The Codex subprocess itself has tools disabled. No handwritten LLM loop remains in `browser.py`.
-
-The orchestrator reads canonical tool evidence before finalizing. Subagent summaries cannot replace source records. `finalize_report` validates the fixed report format against real evidence/review IDs. A validation error returns correction feedback, with at most three submissions; a successful submission advances to human product review. LangChain middleware exposes only the next valid orchestrator action and blocks delegation to the wrong specialist. Unavailable sources count as completed attempts and remain disclosed. Built-in shell/filesystem tools and the general-purpose subagent are disabled; StateBackend keeps agent files in graph state, while SqliteSaver persists checkpoints.
-
-Amazon uses a different approach: Python inserts validated query/ASIN data into the checked-in JavaScript template and runs it through Playwright CLI. The model never writes Amazon selectors or browser code. Collection is bounded to two searches, three products, and twelve sampled reviews per product; review bodies are limited to 1,200 characters.
-
-Some Amazon pages require sign-in to see review text. The scraper recognizes the current review section and records `review_status=login_required` while retaining available product features. Sign in manually in the research browser and start new research to collect reviews; Amazon's generated review summary is not substituted for buyer excerpts. Cloud browser sign-ins are separate from local Chrome. Google Trends may also rate-limit cloud traffic; these source limitations stay visible in the report.
-
-All agents share one provider and a cap of thirty model calls per execution or human-approved continuation. Google gets at most six action decisions per source. The graph recursion limit is fifty. Cancellation reaches the provider and browser tools through the run's stop event. Sample mode bypasses the graph and model entirely. Dependencies are pinned in `requirements.txt` to the versions used by this refactor.
-
-Framework references: [DeepAgents subagents](https://docs.langchain.com/oss/python/deepagents/subagents), [customization](https://docs.langchain.com/oss/python/deepagents/customization), [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview).
-
-## Report and evidence
-
-Every report contains summary, observations, products with demand signals, complaints, requested features, potential market gaps, follow-ups and limitations. Buyer-feedback findings cite actual collected review IDs. Gaps are hypotheses for human validation. JSON export includes the sampled product features and reviews.
-
-Google Trends measures relative interest, not sales. Keyword Planner competition describes Google advertising. Amazon's bought-in-past-month labels are recorded as displayed. Reviews can pool variants/countries and are not a representative survey. Google country/language/date selections do not change Amazon delivery settings or filter its reviews. Unverified filters and missing sources remain disclosed.
-
-The earlier DeepAgents live run on 16 October 2026 completed with all three sources live: four Keyword Planner rows, 53 weekly Trends points, three Amazon products and 36 sampled reviews. Source-filter limitations remain disclosed. Checks cover native graph pause/resume with a reopened SQLite connection, feedback-driven recollection, exact message edits and stale approval rejection. Supplier collection read three real profiles and two displayed audit badges. This saved research and its human product approval were transferred privately to the cloud, retaining original capture dates; the cloud agent generated a fresh inquiry and paused for message approval. No supplier was contacted.
-
-The deployed image `c32ddd2` passed container/browser checks and public health/access checks. The water-bottle run recovered from an inference timeout using its saved human product approval, collected three supplier profiles, and paused for review of an exact inquiry. Its native LangGraph interrupt survived a deployment replacement and private backup restoration. A fresh cloud Amazon check correctly stopped at a verification page. Fresh reviews and Google metrics still require source access; missing reviews, Google Ads sign-in and Trends rate limits remain disclosed. The labeled synthetic walkthrough is separate from real evidence. No supplier was contacted; configured email delivery remains untested.
-
-## Supporting files
-
-- `.data/` holds private history, approval checkpoints and browser sessions; `.release/` is the separate publishing checkout with its Git history. Neither is application code to explain in the demo or include in a container.
-- `cloud_config.py` handles owner/demo access. `deploy/` contains the container, protected cloud browser viewer and deployment instructions. Keep these for Alternate Clouds deployment; see [the deployment guide](deploy/README.md).
-- `package_release.py` copies allowlisted source files into `.release/`; it is a publishing utility, not part of the agent loop.
-- `tests/` contains development checks and is excluded from the production image.
-
-Local model selection defaults to `gpt-6-luna`; `MARKETRADAR_CODEX_MODEL` can override it. Cloud inference uses `AF_API_KEY`, `AF_ORG_ID` and optional `MARKETRADAR_CLOUD_MODEL`; authenticated inference has succeeded inside the deployment. Local Codex sign-in is never copied to the cloud. Sign in to Google Ads manually through the owner's cloud browser before new Keyword Planner collection.
+Google Trends represents relative interest rather than sales. Keyword Planner competition describes advertising competition. Amazon purchase labels are recorded as displayed, and sampled reviews may combine variants or countries. Market gaps remain hypotheses for human validation.

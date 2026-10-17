@@ -101,26 +101,24 @@ function browserReady(browser = {}) {
 
 function renderStatus(status) {
   app.status = status;
-  const codex = status.codex || {}, browser = status.browser || {};
-  const codexReady = Boolean(codex.available !== false && (codex.ready ?? codex.logged_in));
-  const cloudProvider = /alternate/i.test(codex.provider || codex.display_name || '');
-  const providerName = codex.display_name || (cloudProvider ? 'Alternate Clouds' : 'Codex');
+  const reasoning = status.reasoning || {}, browser = status.browser || {};
+  const reasoningReady = Boolean(reasoning.available !== false && reasoning.ready);
+  const providerName = 'Alternate Clouds';
   const attached = browserReady(browser);
-  badge('codex-badge', codexReady ? 'Connected' : codex.available ? 'Login needed' : 'Unavailable', codexReady ? 'good' : 'warn');
-  if (cloudProvider) badge('codex-badge', codexReady ? 'Configured · verify access' : 'Setup needed', codexReady ? 'good' : 'warn');
+  badge('reasoning-badge', reasoningReady ? 'Configured · verify access' : 'Setup needed', reasoningReady ? 'good' : 'warn');
   $('provider-title').textContent = providerName;
-  $('provider-description').textContent = cloudProvider ? 'Research uses the workspace’s Alternate Clouds inference connection. Configuration alone does not confirm a successful model request.' : 'Research uses your locally connected Codex session. No additional model API key is entered here.';
+  $('provider-description').textContent = 'Research uses the workspace’s Alternate Clouds inference connection. Configuration alone does not confirm a successful model request.';
   badge('browser-badge', attached ? 'Attached' : 'Not attached', attached ? 'good' : 'warn');
-  $('global-status').textContent = codexReady && attached ? 'Ready to research' : codexReady ? 'Attach research browser' : 'Connect reasoning session';
-  $('global-status').classList.toggle('ready', codexReady && attached);
-  $('connection-dot').classList.toggle('ready', codexReady && attached);
+  $('global-status').textContent = reasoningReady && attached ? 'Ready to research' : reasoningReady ? 'Attach research browser' : 'Connect reasoning session';
+  $('global-status').classList.toggle('ready', reasoningReady && attached);
+  $('connection-dot').classList.toggle('ready', reasoningReady && attached);
   $('readiness-list').replaceChildren();
-  [[`${providerName} reasoning`, codexReady ? (cloudProvider ? 'Configured' : 'Connected') : 'Needs setup', codexReady], ['Research browser', attached ? 'Attached' : 'Attach to verify', attached]].forEach(([title, text, ready]) => {
+  [[`${providerName} reasoning`, reasoningReady ? 'Configured' : 'Needs setup', reasoningReady], ['Research browser', attached ? 'Attached' : 'Attach to verify', attached]].forEach(([title, text, ready]) => {
     const li = node('li'); li.append(node('span', title), node('span', text, `readiness-state${ready ? ' ready' : ''}`)); $('readiness-list').append(li);
   });
-  $('codex-detail').replaceChildren();
-  [['Model', codex.model || 'Not reported'], ['Session', cloudProvider ? (codex.authenticated ? 'Authenticated request confirmed' : 'Connection not yet authenticated by a request') : codexReady ? 'Signed in locally' : codex.message || codex.error || 'Check local Codex login']].forEach(([key, value]) => {
-    $('codex-detail').append(node('dt', key), node('dd', value));
+  $('reasoning-detail').replaceChildren();
+  [['Model', reasoning.model || 'Not reported'], ['Session', reasoning.authenticated ? 'Authenticated request confirmed' : 'Connection not yet authenticated by a request']].forEach(([key, value]) => {
+    $('reasoning-detail').append(node('dt', key), node('dd', value));
   });
   const browserMessage = browser.message || browser.error || browser.detail;
   if (browserMessage) { $('browser-detail').textContent = typeof browserMessage === 'string' ? browserMessage : JSON.stringify(browserMessage, null, 2); $('browser-detail').hidden = false; }

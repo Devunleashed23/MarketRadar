@@ -75,7 +75,7 @@ def _active(deadline, stop, dispatched=False):
 
 
 class CloudModel:
-    """Synchronous CodexModel-compatible adapter; health never calls inference.
+    """Synchronous Alternate Futures JSON adapter; health never calls inference.
 
     Cancellation stops waiting promptly. It cannot undo inference already
     accepted by the provider. Until the bounded transport exits, another call

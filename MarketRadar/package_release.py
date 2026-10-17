@@ -1,7 +1,7 @@
 """Create an allowlisted source checkout for publishing, without local state.
 
 Run from the parent project: python -m MarketRadar.package_release
-The release directory can have its own Git history; this script never deletes it.
+The publishing checkout lives outside the source folder and retains its Git history.
 """
 import argparse
 import hashlib
@@ -12,7 +12,7 @@ import shutil
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT = ROOT / 'MarketRadar' / '.release'
+DEFAULT = Path.home() / '.marketradar' / 'repository'
 
 
 def source_files():

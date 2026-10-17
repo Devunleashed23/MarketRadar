@@ -111,8 +111,8 @@ class CloudServerTests(unittest.TestCase):
         with patch('models.get_research_model', return_value=Model()), patch('MarketRadar.browser.BrowserCollector.status', return_value={'connected': False}):
             status, _, result = self.request('GET', '/api/status', 'owner', OWNER)
         self.assertEqual(status, 200)
-        self.assertTrue(result['codex']['ready'])
-        self.assertFalse(result['codex']['logged_in'])
+        self.assertTrue(result['reasoning']['ready'])
+        self.assertFalse(result['reasoning']['logged_in'])
         self.assertTrue(result['deployment']['browser_viewer'].startswith('/browser/'))
 
 

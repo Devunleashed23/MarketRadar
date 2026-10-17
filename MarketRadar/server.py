@@ -91,24 +91,23 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
             with health_lock:
                 if time.monotonic() - cached_health.get('time', 0) > 15:
                     try:
-                        codex = get_research_model().health()
-                        codex['logged_in'] = codex.get('authenticated', False)
-                        codex['ready'] = bool(codex.get('authenticated') or codex.get('configured'))
+                        reasoning = get_research_model().health()
+                        reasoning['logged_in'] = reasoning.get('authenticated', False)
+                        reasoning['ready'] = bool(reasoning.get('authenticated') or reasoning.get('configured'))
                     except Exception as exc:
-                        codex = {'available': False, 'logged_in': False, 'detail': self._safe_error(exc)}
+                        reasoning = {'available': False, 'logged_in': False, 'detail': self._safe_error(exc)}
                     try:
                         browser = BrowserCollector().status()
                     except Exception as exc:
                         browser = {'available': False, 'detail': self._safe_error(exc)}
-                    cached_health.update(time=time.monotonic(), codex=codex, browser=browser)
+                    cached_health.update(time=time.monotonic(), reasoning=reasoning, browser=browser)
                 requirements = []
-                if not cached_health['codex'].get('ready'):
-                    requirements.append('Configure Alternate Clouds inference credentials.' if deployment.mode == 'cloud'
-                                        else 'Run codex login and sign in with ChatGPT on this computer.')
+                if not cached_health['reasoning'].get('ready'):
+                    requirements.append('Configure AF_API_KEY and AF_ORG_ID for Alternate Clouds inference.')
                 if not cached_health['browser'].get('connected'):
                     requirements.append('Start the cloud browser.' if deployment.mode == 'cloud' else 'Attach the Playwright CLI session.')
                 requirements.append('Sign in manually to a Google Ads account with Keyword Planner access before live collection.')
-                return {'codex': cached_health['codex'], 'browser': cached_health['browser'],
+                return {'reasoning': cached_health['reasoning'], 'browser': cached_health['browser'],
                         'requirements': requirements, 'deployment': deployment.public(self.role)}
 
         def do_GET(self):
@@ -215,7 +214,7 @@ def main():
     parser = argparse.ArgumentParser(description='Run MarketRadar locally or with explicit cloud authentication.')
     parser.add_argument('--port', type=int, default=int(os.getenv('PORT', '8877')))
     parser.add_argument('--host', default=os.getenv('MARKETRADAR_HOST', '127.0.0.1'))
-    parser.add_argument('--data-dir', default=os.getenv('MARKETRADAR_DATA_DIR', str(Path(__file__).parent / '.data')))
+    parser.add_argument('--data-dir', default=os.getenv('MARKETRADAR_DATA_DIR', str(Path.home() / '.marketradar' / 'runs')))
     args = parser.parse_args()
     radar = Radar(args.data_dir)
     deployment = Deployment.environment()
