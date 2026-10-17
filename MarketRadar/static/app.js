@@ -1,7 +1,7 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const app = { status: null, run: null, runId: null, poll: null, selected: new Set(), tools: [], loading: false, reviewHydrated: null, humanHydrated: null, reviewing: false };
+const app = { status: null, run: null, runId: null, poll: null, selected: new Set(), loading: false, reviewHydrated: null, humanHydrated: null, reviewing: false };
 const terminalStates = new Set(['completed', 'complete', 'done', 'succeeded', 'failed', 'error', 'cancelled', 'canceled', 'ready', 'awaiting_approval', 'partial', 'needs_attention', 'interrupted']);
 const sourceNames = { keyword_planner: 'Keyword Planner', planner: 'Keyword Planner', google_ads: 'Keyword Planner', trends: 'Google Trends', google_trends: 'Google Trends', marketplace: 'Marketplace' };
 
@@ -101,7 +101,7 @@ function browserReady(browser = {}) {
 
 function renderStatus(status) {
   app.status = status;
-  const codex = status.codex || {}, browser = status.browser || {}, fastn = status.fastn || {};
+  const codex = status.codex || {}, browser = status.browser || {};
   const codexReady = Boolean(codex.available !== false && (codex.ready ?? codex.logged_in));
   const cloudProvider = /alternate/i.test(codex.provider || codex.display_name || '');
   const providerName = codex.display_name || (cloudProvider ? 'Alternate Clouds' : 'Codex');
@@ -111,12 +111,11 @@ function renderStatus(status) {
   $('provider-title').textContent = providerName;
   $('provider-description').textContent = cloudProvider ? 'Research uses the workspace’s Alternate Clouds inference connection. Configuration alone does not confirm a successful model request.' : 'Research uses your locally connected Codex session. No additional model API key is entered here.';
   badge('browser-badge', attached ? 'Attached' : 'Not attached', attached ? 'good' : 'warn');
-  badge('fastn-badge', fastn.configured ? 'Configured · test to verify' : 'Not configured', fastn.configured ? 'good' : 'warn');
   $('global-status').textContent = codexReady && attached ? 'Ready to research' : codexReady ? 'Attach research browser' : 'Connect reasoning session';
   $('global-status').classList.toggle('ready', codexReady && attached);
   $('connection-dot').classList.toggle('ready', codexReady && attached);
   $('readiness-list').replaceChildren();
-  [[`${providerName} reasoning`, codexReady ? (cloudProvider ? 'Configured' : 'Connected') : 'Needs setup', codexReady], ['Research browser', attached ? 'Attached' : 'Attach to verify', attached], ['fastn · optional', fastn.configured ? 'Configured' : 'Not connected', Boolean(fastn.configured)]].forEach(([title, text, ready]) => {
+  [[`${providerName} reasoning`, codexReady ? (cloudProvider ? 'Configured' : 'Connected') : 'Needs setup', codexReady], ['Research browser', attached ? 'Attached' : 'Attach to verify', attached]].forEach(([title, text, ready]) => {
     const li = node('li'); li.append(node('span', title), node('span', text, `readiness-state${ready ? ' ready' : ''}`)); $('readiness-list').append(li);
   });
   $('codex-detail').replaceChildren();
@@ -125,9 +124,8 @@ function renderStatus(status) {
   });
   const browserMessage = browser.message || browser.error || browser.detail;
   if (browserMessage) { $('browser-detail').textContent = typeof browserMessage === 'string' ? browserMessage : JSON.stringify(browserMessage, null, 2); $('browser-detail').hidden = false; }
-  $('fastn-run-hint').textContent = fastn.configured ? 'Optionally load connected records through the configured read workflow.' : 'Research works without fastn. Connect it to add external records or save a copy.';
   renderDeployment(status.deployment || {});
-  updateSaveState();
+  updateReviewState();
 }
 
 function renderDeployment(deployment) {
@@ -148,82 +146,12 @@ function renderDeployment(deployment) {
   }
   $('browser-owner-note').hidden = !demo;
   $('browser-owner-note').textContent = 'Browser sign-in and connection settings are managed by the workspace owner. You can run research, review findings, and export results.';
-  document.querySelectorAll('#attach-browser, [data-open-source], #settings-form input, #settings-form textarea, #settings-form button, [form="settings-form"], #discover-tools, #test-fastn').forEach((el) => { el.disabled = demo; });
+  document.querySelectorAll('#attach-browser, [data-open-source]').forEach((el) => { el.disabled = demo; });
 }
 
 async function refreshStatus() {
   try { renderStatus(await api('/api/status')); }
   catch (error) { $('global-status').textContent = 'Server unavailable'; $('global-status').classList.remove('ready'); notice(error.message, true); }
-}
-
-function settingsValue(value, fallback) {
-  return typeof value === 'string' ? value : JSON.stringify(value ?? fallback, null, 2);
-}
-
-async function loadSettings() {
-  const response = await api('/api/settings');
-  const settings = response.settings || response;
-  $('gateway-url').value = settings.gateway_url || settings.url || '';
-  $('read-tool').value = settings.read_tool || '';
-  $('write-tool').value = settings.write_tool || '';
-  $('verify-tool').value = settings.verify_tool || '';
-  $('read-arguments').value = settingsValue(settings.read_arguments, { brief: '{brief}' });
-  $('write-arguments').value = settingsValue(settings.write_arguments, { payload: '{payload}' });
-  $('verify-arguments').value = settingsValue(settings.verify_arguments, { run_id: '{run_id}' });
-  $('key-status').textContent = settings.has_api_key ? 'Saved · leave blank to keep' : 'Not saved';
-  $('api-key').value = '';
-  $('clear-api-key').checked = false;
-}
-
-function parseArguments(id, label) {
-  let value;
-  try { value = JSON.parse($(id).value || '{}'); } catch { throw new Error(`${label} must contain valid JSON.`); }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a JSON object.`);
-  return value;
-}
-
-async function saveSettings(event) {
-  event.preventDefault();
-  await buttonAction($('save-settings'), async () => {
-    const settings = {
-      gateway_url: $('gateway-url').value.trim(), read_tool: $('read-tool').value.trim(), write_tool: $('write-tool').value.trim(), verify_tool: $('verify-tool').value.trim(),
-      read_arguments: parseArguments('read-arguments', 'Read arguments'), write_arguments: parseArguments('write-arguments', 'Store arguments'), verify_arguments: parseArguments('verify-arguments', 'Readback arguments')
-    };
-    if ($('clear-api-key').checked) settings.api_key = ''; else if ($('api-key').value) settings.api_key = $('api-key').value;
-    await post('/api/settings', settings);
-    await loadSettings(); await refreshStatus();
-    connectionResult('Connection settings saved locally. Discover tools and test the read workflow to verify access.');
-  }, 'Saving…');
-}
-
-function connectionResult(message, result, warn = false) {
-  const box = $('connection-result'); box.replaceChildren(node('div', message)); box.hidden = false; box.className = `connection-result${warn ? ' warn' : ''}`;
-  if (result !== undefined) box.append(node('pre', JSON.stringify(result, null, 2)));
-}
-
-async function discoverTools() {
-  await buttonAction($('discover-tools'), async () => {
-    const result = await post('/api/fastn/discover');
-    app.tools = result.tools || [];
-    $('tool-names').replaceChildren(); $('discovered-tools').replaceChildren();
-    connectionResult(app.tools.length ? `${app.tools.length} MCP tools discovered. Inspect their input schemas before configuring templates.` : 'The gateway returned no available tools.', undefined, !app.tools.length);
-    app.tools.forEach((tool) => {
-      const option = node('option'); option.value = tool.name; $('tool-names').append(option);
-      const article = node('article', undefined, 'tool-item'); article.append(node('h3', tool.name), node('p', tool.description || 'No description provided.'));
-      const details = node('details'); details.append(node('summary', 'Inspect input schema'), node('pre', JSON.stringify(tool.inputSchema || tool.input_schema || {}, null, 2))); article.append(details);
-      const buttons = node('div', undefined, 'tool-buttons');
-      [['Use for reading', 'read-tool'], ['Use for storing', 'write-tool'], ['Use for readback', 'verify-tool']].forEach(([text, id]) => { const button = node('button', text, 'text-button'); button.type = 'button'; button.addEventListener('click', () => { $(id).value = tool.name; $(id).focus(); notice('Tool selected. Match its arguments to the input schema, then save the connection.'); }); buttons.append(button); });
-      article.append(buttons); $('discovered-tools').append(article);
-    });
-  }, 'Discovering…');
-}
-
-async function testFastn() {
-  await buttonAction($('test-fastn'), async () => {
-    const result = await post('/api/fastn/test');
-    connectionResult('Read workflow returned a response. Inspect it below; this test does not write records.', result);
-    await refreshStatus();
-  }, 'Testing read…');
 }
 
 function briefFromForm() {
@@ -236,11 +164,8 @@ function briefFromForm() {
 function updateMode() {
   const sample = document.querySelector('[name="mode"]:checked').value === 'sample';
   const demo = app.status?.deployment?.role === 'demo';
-  $('use-fastn').disabled = sample;
-  if (sample) { $('use-fastn').dataset.previous = String($('use-fastn').checked); $('use-fastn').checked = false; }
-  else if ($('use-fastn').dataset.previous) { $('use-fastn').checked = $('use-fastn').dataset.previous === 'true'; delete $('use-fastn').dataset.previous; }
   $('mode-note').hidden = !sample;
-  $('mode-note').textContent = demo ? 'Owner sign-in runs live research; demo visitors can explore samples and review saved reports.' : 'Sample mode uses example evidence. It makes no external research, model, or fastn calls.';
+  $('mode-note').textContent = demo ? 'Owner sign-in runs live research; demo visitors can explore samples and review saved reports.' : 'Sample mode uses example evidence. It makes no external research or model calls.';
   $('run-button').replaceChildren(document.createTextNode(sample ? 'Explore sample research' : 'Research this market'), node('span', '↗'));
 }
 
@@ -252,10 +177,8 @@ async function startRun(event) {
     if (!brief.keyword) throw new Error('Enter a product or seed keyword.');
     const mode = document.querySelector('[name="mode"]:checked').value;
     if (app.status?.deployment?.role === 'demo' && mode !== 'sample') throw new Error('Owner sign-in is required to run live research.');
-    const useFastn = mode === 'live' && $('use-fastn').checked;
-    if (useFastn && !app.status?.fastn?.configured) { navigate('connections', true); throw new Error('Configure fastn to use optional enrichment, or leave its checkbox off to research without it.'); }
     app.loading = true; $('run-button').disabled = true; $('notice').hidden = true;
-    const result = await post('/api/runs', { ...brief, mode, use_fastn: useFastn });
+    const result = await post('/api/runs', { ...brief, mode });
     if (!result.id) throw new Error('The server did not return a research run ID.');
     await openRun(result.id, true);
   } catch (error) { notice(error.message, true); }
@@ -266,7 +189,7 @@ function isTerminal(run) { return terminalStates.has(run.state); }
 
 async function openRun(id, scroll = false) {
   clearTimeout(app.poll);
-  if (app.runId !== id) { app.selected.clear(); app.reviewHydrated = null; $('review-note').value = ''; $('review-result').hidden = true; $('save-result').hidden = true; }
+  if (app.runId !== id) { app.selected.clear(); app.reviewHydrated = null; $('review-note').value = ''; $('review-result').hidden = true; }
   app.runId = id; navigate('research');
   $('run-section').hidden = false;
   await pollRun(id);
@@ -312,7 +235,7 @@ function renderRun(run) {
   $('export-button').hidden = false; $('export-button').href = `/api/runs/${encodeURIComponent(run.id)}/export`;
   const sample = run.mode === 'sample';
   $('run-banner').hidden = !sample && !run.error;
-  $('run-banner').textContent = sample ? 'SAMPLE RESEARCH · These records are example data. No live source, model, or fastn connection was exercised.' : run.error ? `This run encountered an error: ${run.error}` : '';
+  $('run-banner').textContent = sample ? 'SAMPLE RESEARCH · These records are example data. No live source or model connection was exercised.' : run.error ? `This run encountered an error: ${run.error}` : '';
   renderStages(run); renderEvents(events); renderSources(evidence, run);
   $('report-content').hidden = !run.report;
   if (run.report) renderReport(run);
@@ -372,7 +295,7 @@ function renderReport(run) {
     const list = node('ul'); limitations.forEach((item) => list.append(node('li', typeof item === 'string' ? item : JSON.stringify(item))));
     $('limitations').append(node('strong', 'What this research cannot establish'), list);
   }
-  renderSync(run.sync); updateSaveState();
+  updateReviewState();
 }
 
 function keywordsFrom(evidence) {
@@ -542,7 +465,7 @@ function renderRecommendations(recommendations, evidence) {
   recommendations.slice(0, 3).forEach((item, index) => {
     const id = String(item.id ?? `action-${index + 1}`); const row = node('div', undefined, 'recommendation');
     const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.id = `action-${index}`; checkbox.value = id; checkbox.checked = app.selected.has(id);
-    checkbox.addEventListener('change', () => { if (checkbox.checked) app.selected.add(id); else app.selected.delete(id); updateSaveState(); });
+    checkbox.addEventListener('change', () => { if (checkbox.checked) app.selected.add(id); else app.selected.delete(id); updateReviewState(); });
     const content = node('div'); const label = node('label', item.title || item.proposed_action || 'Suggested follow-up'); label.htmlFor = checkbox.id;
     content.append(label, node('p', item.reason || item.interpretation || 'Inspect the source evidence before choosing this action.'));
     const links = node('div', undefined, 'evidence-links');
@@ -568,7 +491,7 @@ function renderEvidence(evidence) {
   });
 }
 
-function updateSaveState() {
+function updateReviewState() {
   const count = app.selected.size;
   $('approval-count').textContent = count ? `${count} action${count === 1 ? '' : 's'} selected for approval` : 'No actions selected';
   const approval = app.run?.approval;
@@ -579,17 +502,7 @@ function updateSaveState() {
   $('approve-button').disabled = !completed || !app.run?.report || reviewMatches;
   $('approve-button').textContent = reviewMatches ? 'Review recorded ✓' : app.run?.mode === 'sample' ? 'Record sample review' : count ? `Approve ${count} follow-up${count === 1 ? '' : 's'}` : 'Record review · no actions approved';
   $('review-hint').textContent = reviewMatches ? 'Your decision is saved in History. No external action was executed.' : approval ? 'Your selection or note changed. Record a new review to keep your decision.' : 'Approve useful follow-ups, or record that none are ready. Your decision stays in History.';
-  $('save-button').replaceChildren(document.createTextNode('Copy reviewed report to fastn'), node('span', '↗'));
-  const sample = app.run?.mode === 'sample';
-  const configured = Boolean(app.status?.fastn?.configured);
-  const demoViewer = app.status?.deployment?.role === 'demo';
-  const unknown = app.run?.sync?.status === 'unknown';
-  const saved = ['verified', 'saved_unverified', 'saved'].includes(app.run?.sync?.status);
-  const saving = app.run?.sync?.status === 'saving';
-  $('save-button').disabled = !completed || !reviewMatches || sample || !configured || demoViewer || unknown || saved || saving;
   document.querySelectorAll('#recommendations input').forEach((input) => { input.disabled = !completed; });
-  if (saved) $('save-button').textContent = 'External copy saved';
-  $('save-hint').textContent = sample ? 'Sample reviews stay in History and can be exported. No external copy is sent.' : demoViewer ? 'Your review stays in History. External copies are managed by the workspace owner.' : unknown ? 'The external save outcome is unknown. Inspect the destination before retrying.' : saved ? 'This external copy is fixed; newer local reviews are not sent automatically.' : !configured ? 'Your report and review stay in History. Connect fastn only if you want an external copy.' : !reviewMatches ? 'Record your review before sending an optional external copy.' : 'Send a copy of the report and recorded human decision. No task is executed.';
 }
 
 function renderHumanLoop(run) {
@@ -701,37 +614,7 @@ async function approveRun() {
     });
     await pollRun(app.runId);
   }, 'Recording your decision…');
-  updateSaveState();
-}
-
-function renderSync(sync) {
-  if (!sync || !sync.status || ['pending', 'not_saved', 'idle'].includes(sync.status)) return;
-  const messages = { verified: 'Saved through fastn and read back successfully.', saved_unverified: 'The save returned successfully. Persistence has not been verified by readback.', unknown: 'Save outcome unknown. The connection may have timed out after writing. Inspect the destination before retrying.', failed: 'The save failed. Inspect the error and destination before retrying.', saved: 'The save returned successfully. Check the destination; readback was not confirmed.' };
-  const box = $('save-result'); box.hidden = false; box.className = `save-result${sync.status === 'verified' ? '' : ' warn'}`; box.replaceChildren(node('div', messages[sync.status] || `Save status: ${readable(sync.status)}`));
-  if (sync.error) box.append(node('p', sync.error));
-  const refs = Array.isArray(sync.references) ? sync.references : sync.references ? [sync.references] : [];
-  refs.forEach((ref) => {
-    const url = typeof ref === 'string' ? ref : ref.url || ref.href;
-    const a = externalLink(url, typeof ref === 'object' ? ref.label || ref.name || 'Open saved record ↗' : 'Open saved record ↗');
-    if (a) box.append(a); else box.append(node('p', typeof ref === 'string' ? ref : JSON.stringify(ref)));
-  });
-  if (sync.result !== undefined) { const details = node('details'); details.append(node('summary', 'Inspect gateway result'), node('pre', JSON.stringify(sync.result, null, 2))); box.append(details); }
-}
-
-async function saveRun() {
-  if (!app.run || $('save-button').disabled) return;
-  await buttonAction($('save-button'), async () => {
-    try {
-      const result = await post(`/api/runs/${encodeURIComponent(app.runId)}/save`, { approved_action_ids: [...app.selected] });
-      if (result.sync) app.run.sync = result.sync;
-      else if (result.status) app.run.sync = result;
-      renderSync(app.run.sync);
-    } finally {
-      // A failed HTTP response may follow a completed write. Reload its recorded outcome before offering retry.
-      await pollRun(app.runId);
-    }
-  }, 'Saving through fastn…');
-  updateSaveState();
+  updateReviewState();
 }
 
 async function loadHistory() {
@@ -757,13 +640,8 @@ function bindEvents() {
   window.addEventListener('hashchange', () => { if (['research', 'connections', 'history'].includes(location.hash.slice(1))) navigate(location.hash.slice(1)); });
   $('research-form').addEventListener('submit', startRun);
   document.querySelectorAll('[name="mode"]').forEach((input) => input.addEventListener('change', updateMode));
-  $('use-fastn').addEventListener('change', updateMode);
-  $('settings-form').addEventListener('submit', saveSettings);
-  $('discover-tools').addEventListener('click', discoverTools);
-  $('test-fastn').addEventListener('click', testFastn);
   $('refresh-status').addEventListener('click', () => buttonAction($('refresh-status'), refreshStatus, 'Checking…'));
   $('refresh-history').addEventListener('click', loadHistory);
-  $('save-button').addEventListener('click', saveRun);
   $('approve-button').addEventListener('click', approveRun);
   ['approve', 'revise', 'reject'].forEach((decision) => $(`human-${decision}`).addEventListener('click', () => reviewAgent(decision)));
   $('human-review-start').addEventListener('click', () => buttonAction($('human-review-start'), async () => {
@@ -772,7 +650,7 @@ function bindEvents() {
     notice('The agent is continuing from your saved research and approvals.');
   }, 'Opening agent review…'));
   $('human-product').addEventListener('change', () => { if (app.run) renderHumanLoop(app.run); });
-  $('review-note').addEventListener('input', updateSaveState);
+  $('review-note').addEventListener('input', updateReviewState);
   $('cancel-button').addEventListener('click', () => {
     if (app.status?.deployment?.role === 'demo' && app.run?.mode === 'live') return;
     return buttonAction($('cancel-button'), async () => { await post(`/api/runs/${encodeURIComponent(app.runId)}/cancel`); await pollRun(app.runId); }, 'Cancelling…');
@@ -788,7 +666,6 @@ function bindEvents() {
 async function init() {
   bindEvents(); updateMode(); navigate(location.hash.slice(1));
   await refreshStatus();
-  if (app.status?.deployment?.role !== 'demo') await loadSettings().catch((error) => notice(error.message, true));
 }
 
 init();

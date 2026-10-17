@@ -19,7 +19,7 @@ def source_files():
     files = [ROOT / 'models.py', ROOT / 'subagents' / 'amazon_market_agent_v2.py',
              ROOT / 'subagents' / 'listing_agent_v2.py', ROOT / 'subagents' / '__init__.py']
     for directory, pattern in [('MarketRadar', '*.py'), ('MarketRadar', '*.js'), ('MarketRadar/tests', '*.py'),
-                               ('MarketRadar/static', '*'), ('MarketRadar/integrations', '*.md'),
+                               ('MarketRadar/static', '*'),
                                ('prompts/amazon_market_research', '*.md'), ('MarketRadar/deploy', '*')]:
         files.extend(path for path in (ROOT / directory).glob(pattern) if path.is_file())
     files.extend(ROOT / 'MarketRadar' / name for name in ('README.md', 'requirements.txt', 'start.ps1'))
@@ -44,7 +44,6 @@ def package(output=DEFAULT):
         target.write_bytes(data)
         manifest.append({'path': relative.as_posix(), 'sha256': hashlib.sha256(data).hexdigest()})
     (output / 'README.md').write_text((ROOT / 'MarketRadar' / 'README.md').read_text(encoding='utf-8')
-                                     .replace('](integrations/', '](MarketRadar/integrations/')
                                      .replace('](deploy/', '](MarketRadar/deploy/'), encoding='utf-8')
     (output / '.gitignore').write_text('.env\n.env.*\n*.pyc\n__pycache__/\n.venv/\nnode_modules/\n**/.data/\n**/.release/\n.playwright*/\nrelease-manifest.json\n', encoding='utf-8')
     (output / '.dockerignore').write_text('**/.git\n**/.env*\n**/.data\n**/.release\n**/__pycache__\n**/node_modules\n**/.venv\n**/.playwright*\n', encoding='utf-8')

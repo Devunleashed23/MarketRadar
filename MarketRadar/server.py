@@ -9,7 +9,6 @@ import time
 from urllib.parse import urlsplit
 
 from .core import Radar
-from .fastn import FastnClient
 from .cloud_config import Deployment
 
 
@@ -26,8 +25,7 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
 
         def _safe_error(self, exc):
             text = str(exc)[:2500]
-            secrets = [radar.settings.get().get('api_key', ''), deployment.owner_password,
-                       deployment.demo_password, os.getenv('AF_API_KEY', '')]
+            secrets = [deployment.owner_password, deployment.demo_password, os.getenv('AF_API_KEY', '')]
             for key in secrets:
                 if key:
                     text = text.replace(key, '[redacted]')
@@ -103,7 +101,6 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
                     except Exception as exc:
                         browser = {'available': False, 'detail': self._safe_error(exc)}
                     cached_health.update(time=time.monotonic(), codex=codex, browser=browser)
-                public = radar.settings.public()
                 requirements = []
                 if not cached_health['codex'].get('ready'):
                     requirements.append('Configure Alternate Clouds inference credentials.' if deployment.mode == 'cloud'
@@ -112,7 +109,7 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
                     requirements.append('Start the cloud browser.' if deployment.mode == 'cloud' else 'Attach the Playwright CLI session.')
                 requirements.append('Sign in manually to a Google Ads account with Keyword Planner access before live collection.')
                 return {'codex': cached_health['codex'], 'browser': cached_health['browser'],
-                        'fastn': public, 'requirements': requirements, 'deployment': deployment.public(self.role)}
+                        'requirements': requirements, 'deployment': deployment.public(self.role)}
 
         def do_GET(self):
             if urlsplit(self.path).path == '/healthz':
@@ -128,8 +125,6 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
                     return
                 if path == '/api/status':
                     return self._json(self._status())
-                if path == '/api/settings':
-                    return self._json(radar.settings.public())
                 if path == '/api/runs':
                     return self._json({'runs': radar.list()})
                 if path.startswith('/api/runs/'):
@@ -160,19 +155,9 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
             path = urlsplit(self.path).path
             try:
                 body = self._body()
-                if (path == '/api/settings' or path.startswith('/api/fastn/')
-                        or path.startswith('/api/browser/') or path.endswith('/save')) and not self._owner():
-                    return
-                if path == '/api/settings':
-                    return self._json(radar.settings.save(body))
-                if path == '/api/fastn/discover':
-                    return self._json(FastnClient(radar.settings.get()).discover())
-                if path == '/api/fastn/test':
-                    # Calls only the explicitly configured loader; never the store tool.
-                    brief = body.get('brief', {'keyword': 'connection test', 'country': 'US'})
-                    result = FastnClient(radar.settings.get()).load_brief(brief)
-                    return self._json({'result': result})
                 if path.startswith('/api/browser/'):
+                    if not self._owner():
+                        return
                     from .browser import BrowserCollector
                     from .core import validate_brief
                     if any(t.is_alive() for t in radar.threads.values()):
@@ -214,8 +199,6 @@ def make_server(radar, port=8877, host='127.0.0.1', deployment=None):
                         if self.role == 'demo' and radar.get(identity)['mode'] == 'live':
                             return self._json({'error': 'Only the owner can cancel live research.'}, 403)
                         return self._json(radar.cancel(identity))
-                    if action == 'save':
-                        return self._json(radar.save(identity, body.get('approved_action_ids', [])))
                     if action == 'approve':
                         return self._json(radar.approve(identity, body.get('approved_action_ids', []),
                                                        body.get('note', ''), report_version=body.get('report_version')))

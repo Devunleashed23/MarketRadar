@@ -47,14 +47,13 @@ def main():
     assert request('/browser/websockify', 'demo', websocket=True)[0] == 403
     assert request('/browser/vnc.html', 'owner')[0] == 200
     assert request('/browser/websockify', 'owner', websocket=True)[0] == 101
-    assert request('/api/settings', 'demo', method='POST', body='{}')[0] == 403
-    live = json.dumps({'keyword': 'blocked demo inference', 'mode': 'live', 'use_fastn': False})
+    assert request('/api/browser/attach', 'demo', method='POST', body='{}')[0] == 403
+    live = json.dumps({'keyword': 'blocked demo inference', 'mode': 'live'})
     assert request('/api/runs', 'demo', method='POST', body=live)[0] == 403
-    code, body = request('/api/settings', 'owner')
+    code, body = request('/api/status', 'owner')
     assert code == 200
-    settings = json.loads(body)
-    assert 'api_key' not in settings
-    sample = json.dumps({'keyword': 'container smoke mug', 'mode': 'sample', 'use_fastn': False})
+    assert 'api_key' not in json.loads(body)
+    sample = json.dumps({'keyword': 'container smoke mug', 'mode': 'sample'})
     code, body = request('/api/runs', 'demo', method='POST', body=sample)
     assert code == 202, body
     identity = json.loads(body)['id']

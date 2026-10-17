@@ -1,7 +1,7 @@
 """Bounded JSON inference using the official CLI's saved ChatGPT sign-in.
 
 No API-key fallback, token handling, retries, or global CLI configuration edits.
-The caller supplies evidence and owns browser collection and fastn MCP calls.
+The caller supplies evidence and owns browser collection.
 """
 import json
 import os

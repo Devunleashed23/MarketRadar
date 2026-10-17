@@ -85,9 +85,8 @@ The deployed image `c32ddd2` passed container/browser checks and public health/a
 
 ## Supporting files
 
-- `.data/` holds private local history and settings; `.release/` is the separate publishing checkout with its Git history. Neither is application code to explain in the demo or include in a container.
+- `.data/` holds private history, approval checkpoints and browser sessions; `.release/` is the separate publishing checkout with its Git history. Neither is application code to explain in the demo or include in a container.
 - `cloud_config.py` handles owner/demo access. `deploy/` contains the container, protected cloud browser viewer and deployment instructions. Keep these for Alternate Clouds deployment; see [the deployment guide](deploy/README.md).
-- `fastn.py` and `settings.py` support the existing optional fastn connection. It is off by default, does not participate in the current demo, and is documented in [the integration guide](integrations/fastn-setup.md). Recording a human review writes only local history; the separate copy button performs an optional fastn write.
 - `package_release.py` copies allowlisted source files into `.release/`; it is a publishing utility, not part of the agent loop.
 - `tests/` contains development checks and is excluded from the production image.
 

@@ -71,15 +71,15 @@ class CloudServerTests(unittest.TestCase):
     def test_only_minimal_health_is_public(self):
         status, _, data = self.request('GET', '/healthz')
         self.assertEqual((status, data['status']), (200, 'ok'))
-        for path in ('/api/settings', '/api/runs'):
+        for path in ('/api/status', '/api/runs'):
             status, headers, _ = self.request('GET', path)
             self.assertEqual(status, 401)
             self.assertIn('Basic realm=', headers['WWW-Authenticate'])
 
-    def test_demo_reads_and_records_review_but_cannot_operate_browser_or_settings(self):
+    def test_demo_reads_and_records_review_but_cannot_operate_browser(self):
         status, _, _ = self.request('GET', '/api/runs', 'demo', DEMO)
         self.assertEqual(status, 200)
-        for path in ('/api/settings', '/api/browser/attach', '/api/fastn/discover'):
+        for path in ('/api/browser/attach', '/api/browser/open'):
             status, _, _ = self.request('POST', path, 'demo', DEMO, {})
             self.assertEqual(status, 403)
         self.assertEqual(self.request('POST', '/api/runs', 'demo', DEMO, {'keyword': 'travel mug', 'mode': 'live'})[0], 403)
@@ -94,7 +94,7 @@ class CloudServerTests(unittest.TestCase):
     def test_owner_only_viewer_auth_and_no_password_leak(self):
         self.assertEqual(self.request('GET', '/api/cloud/browser-auth', 'demo', DEMO)[0], 403)
         self.assertEqual(self.request('GET', '/api/cloud/browser-auth', 'owner', OWNER)[0], 204)
-        status, _, result = self.request('GET', '/api/settings', 'owner', OWNER)
+        status, _, result = self.request('GET', '/api/runs', 'owner', OWNER)
         self.assertEqual(status, 200)
         self.assertNotIn(OWNER, json.dumps(result))
         self.assertNotIn(DEMO, json.dumps(result))
@@ -114,7 +114,6 @@ class CloudServerTests(unittest.TestCase):
         self.assertTrue(result['codex']['ready'])
         self.assertFalse(result['codex']['logged_in'])
         self.assertTrue(result['deployment']['browser_viewer'].startswith('/browser/'))
-        self.assertFalse(any('fastn' in item for item in result['requirements']))
 
 
 if __name__ == '__main__':

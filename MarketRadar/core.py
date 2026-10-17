@@ -1,15 +1,13 @@
-"""Bounded research, persisted human decisions, and optional external copies."""
+"""Bounded research and persisted human decisions."""
 import copy
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import threading
 from urllib.parse import urlsplit
 import uuid
-
-from .fastn import FastnClient
-from .settings import Settings
 
 FINAL_STATES = ('completed', 'failed', 'cancelled', 'interrupted', 'awaiting_review')
 
@@ -120,15 +118,13 @@ def sample_evidence(brief):
 
 
 class Radar:
-    def __init__(self, directory, model_factory=None, browser_factory=None, fastn_factory=None):
+    def __init__(self, directory, model_factory=None, browser_factory=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.settings = Settings(self.directory)
         self.lock = threading.RLock()
         self.threads, self.stops = {}, {}
         self.model_factory = model_factory
         self.browser_factory = browser_factory
-        self.fastn_factory = fastn_factory or FastnClient
         for path in self.directory.glob('run-*.json'):
             run = json.loads(path.read_text(encoding='utf-8'))
             if run['state'] not in FINAL_STATES:
@@ -182,11 +178,11 @@ class Radar:
             run['events'] = (run['events'] + [event])[-200:]
             self._write(run)
 
-    def _create(self, brief, mode, use_fastn):
-        run = {'id': uuid.uuid4().hex, 'brief': brief, 'mode': mode, 'use_fastn': use_fastn,
+    def _create(self, brief, mode):
+        run = {'id': uuid.uuid4().hex, 'brief': brief, 'mode': mode,
                'state': 'queued', 'created_at': now(), 'report_version': 1, 'events': [],
                'evidence': [], 'report': None, 'error': None, 'approval': None,
-               'approval_history': [], 'sync': {'status': 'not_saved'}}
+               'approval_history': []}
         self._write(run)
         return run
 
@@ -195,15 +191,10 @@ class Radar:
         mode = raw.get('mode', 'live')
         if mode not in ('sample', 'live'):
             raise ValueError('Choose live research or the labeled sample demonstration.')
-        use_fastn = raw.get('use_fastn', False)
-        if type(use_fastn) is not bool:
-            raise ValueError('use_fastn must be a boolean.')
         with self.lock:
             if any(t.is_alive() for t in self.threads.values()):
                 raise ValueError('One research run is already active; it owns the shared browser session.')
-            if mode == 'live' and use_fastn and not self.settings.public()['configured']:
-                raise ValueError('Configure fastn to use optional enrichment, or leave use_fastn off.')
-            run = self._create(brief, mode, use_fastn if mode == 'live' else False)
+            run = self._create(brief, mode)
             self.stops[run['id']] = threading.Event()
             thread = threading.Thread(target=self._execute, args=(run['id'],), daemon=True)
             self.threads[run['id']] = thread
@@ -240,7 +231,7 @@ class Radar:
                 evidence = sample_evidence(brief)
                 report = validate_report({'summary': 'Sample walkthrough: these observations and metrics are synthetic.',
                     'observations': ['The sample shows the shape of a combined research brief.'],
-                    'limitations': ['No browser collection, Codex turn, or fastn call was made.'],
+                    'limitations': ['No browser collection or model call was made.'],
                     'products_in_demand': [{'title': 'Synthetic keyword demand candidate',
                         'detail': 'Example Planner volume: 1K–10K (synthetic). This is not measured product sales.',
                         'evidence_ids': ['sample-planner'], 'review_ids': []}],
@@ -260,18 +251,7 @@ class Radar:
                 self._change(identity, evidence=evidence, report=report, state='completed')
                 return
             self._change(identity, state='loading')
-            if run['use_fastn'] and decision is None:
-                client = self.fastn_factory(self.settings.get())
-                self._event(identity, 'fastn', 'Loading research context through the configured fastn MCP tool.')
-                loaded = client.load_brief(brief, identity)
-                check()
-                # Workspace tools may return a canonical brief or extra contextual records.
-                if isinstance(loaded, dict) and isinstance(loaded.get('brief'), dict):
-                    brief = validate_brief(dict(brief, **loaded['brief']))
-                    self._change(identity, brief=brief)
-                self._change(identity, fastn_context=loaded)
-            else:
-                self._event(identity, 'research_brief', 'Using the research brief you supplied; optional fastn enrichment is off.')
+            self._event(identity, 'research_brief', 'Using the research brief you supplied.')
             if self.model_factory:
                 model = self.model_factory(emit=emit, max_calls=30)
             else:
@@ -285,13 +265,9 @@ class Radar:
                 browser = BrowserCollector(emit=emit)
             self._change(identity, state='collecting')
             from .agents import run_research
-            agent_brief = dict(brief)
-            workspace_context = self.get(identity).get('fastn_context')
-            if workspace_context is not None:
-                agent_brief['workspace_context'] = workspace_context
             from langgraph.checkpoint.sqlite import SqliteSaver
             with SqliteSaver.from_conn_string(str(self.directory / 'checkpoints.sqlite')) as saver:
-                evidence, report = run_research(agent_brief, model, browser, stop=stop, emit=emit,
+                evidence, report = run_research(brief, model, browser, stop=stop, emit=emit,
                     on_evidence=lambda records: self._change(identity, evidence=records),
                     session=run, checkpointer=saver, resume=decision,
                     on_update=lambda **fields: self._change(identity, **fields))
@@ -310,7 +286,7 @@ class Radar:
                 self._event(identity, 'completed', 'Workflow finished. Human decisions and any supplier handoff are saved in History.')
         except Exception as exc:
             message = str(exc)
-            secret = self.settings.get().get('api_key', '')
+            secret = os.getenv('AF_API_KEY', '')
             if secret:
                 message = message.replace(secret, '[redacted]')
             self._change(identity, state='cancelled' if stop.is_set() else 'failed', error=message[:2500])
@@ -447,35 +423,3 @@ class Radar:
             label = 'Sample review recorded' if approval['sample'] else 'Human review recorded'
             self._event(identity, 'human_review', f'{label}: {len(actions)} follow-up(s) approved. No external action executed.')
             return copy.deepcopy(approval)
-
-    def save(self, identity, approved_action_ids):
-        with self.lock:
-            run = self.get(identity)
-            if run['mode'] != 'live' or run['state'] != 'completed':
-                raise ValueError('Only completed live reports can be saved to fastn; sample data cannot be published.')
-            if run.get('sync', {}).get('status') in ('saving', 'unknown'):
-                raise ValueError('The previous write may have completed. Check the destination before another write.')
-            actions = self._select_actions(run, approved_action_ids)
-            approval = run.get('approval') or {}
-            if (approval.get('report_version') != run['report_version']
-                    or approval.get('approved_action_ids') != [action['id'] for action in actions]):
-                raise ValueError('Record a human review of these actions before sending an external copy.')
-            if run.get('sync', {}).get('status') in ('verified', 'saved_unverified'):
-                if run['sync'].get('approval_revision') == approval['revision']:
-                    return run['sync']
-                raise ValueError('This report version already has an external copy. Start a new run to send different reviewed actions.')
-            if not self.settings.public()['configured']:
-                raise ValueError('Configure fastn load/store workflows before saving.')
-            payload = {'run_id': identity, 'brief': run['brief'], 'report_version': run['report_version'],
-                       'evidence': run['evidence'], 'report': run['report'],
-                       'approved_actions': actions, 'human_review': approval}
-            self._change(identity, sync={'status': 'saving'})
-        try:
-            result = self.fastn_factory(self.settings.get()).store_run(payload)
-        except Exception:
-            self._change(identity, sync={'status': 'unknown', 'detail': 'Write outcome is uncertain. Inspect fastn executions/destination before retrying.'})
-            raise
-        result = dict(result, approval_revision=approval['revision'])
-        self._change(identity, sync=result)
-        self._event(identity, 'fastn_saved', result.get('detail', 'fastn returned a write result.'))
-        return result
